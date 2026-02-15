@@ -1,0 +1,15 @@
+<drawables xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
+    <bitmap id="LauncherIcon" filename="launcher_icon.svg" dithering="none" />
+    <bitmap id="BatteryIcon" filename="battery_icon.svg" dithering="none" />
+    <bitmap id="StepsIcon" filename="steps_icon.svg" dithering="none" />
+    <bitmap id="DistanceIcon" filename="distance_icon.svg" dithering="none" />
+    <bitmap id="NotificationIcon" filename="notification_icon.svg" dithering="none" />
+    <bitmap id="ClearDay" filename="clear_day.svg" dithering="none" />
+    <bitmap id="ClearNight" filename="clear_night.svg" dithering="none" />
+    <bitmap id="CloudyDay" filename="cloudy_day.svg" dithering="none" />
+    <bitmap id="CloudyNight" filename="cloudy_night.svg" dithering="none" />
+    <bitmap id="Rainy" filename="rainy.svg" dithering="none" />
+    <bitmap id="Snowy" filename="snowy.svg" dithering="none" />
+    <bitmap id="ThunderStorm" filename="thunderstorm.svg" dithering="none" />
+    <bitmap id="SnowStorm" filename="snowstorm.svg" dithering="none" />
+</drawables>

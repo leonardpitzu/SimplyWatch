@@ -1,0 +1,36 @@
+<strings>
+    <string id="SF">Settled fine</string>
+    <string id="FW">Fine weather</string>
+    <string id="BF">Becoming fine</string>
+    <string id="FN">Fine</string>
+    <string id="FF">Fairly fine</string>
+    <string id="SHE">Showery early</string>
+    <string id="CH">Changeable</string>
+    <string id="RU">Rather unsettled</string>
+    <string id="UN">Unsettled</string>
+    <string id="SH">Showery</string>
+    <string id="VU">Very unsettled</string>
+    <string id="OR">Occasional rain</string>
+    <string id="RT">Rain at times</string>
+    <string id="RA">Rain</string>
+    <string id="ST">Stormy</string>
+    <string id="MT"> </string>
+    <string id="LS">becoming less settled</string>
+    <string id="PS">possible showers</string>
+    <string id="IM">improving</string>
+    <string id="PSE">possible showers early</string>
+    <string id="SL">showery later</string>
+    <string id="ME">mending</string>
+    <string id="SY">showers likely</string>
+    <string id="CL">clearing later</string>
+    <string id="PI">probably improving</string>
+    <string id="BI">bright intervals</string>
+    <string id="SR">some rain</string>
+    <string id="SI">short fine intervals</string>
+    <string id="RL">rain later</string>
+    <string id="MO">(mostly)</string>
+    <string id="WO">worsening</string>
+    <string id="FI">at frequent intervals</string>
+    <string id="MI">may improve</string>
+    <string id="MR">much rain</string>
+</strings>
