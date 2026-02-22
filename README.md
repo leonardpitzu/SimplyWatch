@@ -55,11 +55,9 @@ The Zambretti algorithm produces 26 distinct forecast outcomes, ranging from **S
 | **Positioning** | Detect hemisphere (north/south) for seasonal corrections |
 | **Notifications** | Show unread notification count on the watch face |
 
-## Installation
+## Install
 
-### Connect IQ Store
-
-*Coming soon* — install directly from the Garmin Connect IQ Store.
+Compile yourself, copy to the watch and enjoy!
 
 ### Side-load (manual)
 
