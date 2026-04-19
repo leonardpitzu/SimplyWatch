@@ -6,7 +6,6 @@ import Toybox.Activity;
 import Toybox.ActivityMonitor;
 import Toybox.Time;
 import Toybox.Time.Gregorian;
-import Toybox.Position;
 import Toybox.Sensor;
 import Toybox.SensorHistory;
 import Toybox.Math;
@@ -15,7 +14,7 @@ import Sager;
 
 const cOffset = 0;
 const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 3) + (Gregorian.SECONDS_PER_MINUTE * 10));
-const cSteady = 5.0; // equivalent to 0.5 hPa
+const cSteady = 5.0; // Pa dead-zone (~0.05 hPa)
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
@@ -145,12 +144,12 @@ class SimplyWatchView extends WatchUi.WatchFace {
     }
 
     hidden function refreshDynamicData(today) as Void {
+        var deviceSettings = System.getDeviceSettings();
+        mNotificationCount = (deviceSettings != null && deviceSettings has :notificationCount && deviceSettings.notificationCount != null) ? deviceSettings.notificationCount : 0;
+
         var minuteKey = getMinuteKey(today);
         if (minuteKey != mMinuteCacheKey) {
             mMinuteCacheKey = minuteKey;
-
-            var deviceSettings = System.getDeviceSettings();
-            mNotificationCount = (deviceSettings != null && deviceSettings has :notificationCount && deviceSettings.notificationCount != null) ? deviceSettings.notificationCount : 0;
 
             var activity = ActivityMonitor.getInfo();
             if (activity != null) {
@@ -188,11 +187,11 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 if (forecast.size() > 0 && forecast[0] != null) {
                     mForecastLabel = forecast[0].toString();
                 }
-                if (forecast.size() > 2 && forecast[2] != null) {
-                    mForecastNumber = forecast[2].toNumber();
+                if (forecast.size() > 1 && forecast[1] != null) {
+                    mForecastNumber = forecast[1].toNumber();
                 }
-                if (forecast.size() > 3 && forecast[3] != null) {
-                    mForecastChance = forecast[3].toNumber();
+                if (forecast.size() > 2 && forecast[2] != null) {
+                    mForecastChance = forecast[2].toNumber();
                 }
             }
 

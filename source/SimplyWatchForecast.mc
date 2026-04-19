@@ -14,8 +14,8 @@ import Toybox.Lang;
 
 module Sager {
 
-    // ── Forecast line 1: main condition (26 entries, indexed 0-25) ──────────
-    var forecastStrings0 as Array<Lang.ResourceId> = [
+    // ── Forecast conditions (26 entries, indexed 0-25) ──────────────────────
+    var forecastStrings as Array<Lang.ResourceId> = [
         Rez.Strings.SF,   // 0  Settled fine
         Rez.Strings.FW,   // 1  Fine weather
         Rez.Strings.BF,   // 2  Becoming fine
@@ -44,36 +44,6 @@ module Sager {
         Rez.Strings.ST    // 25 Stormy
     ];
 
-    // ── Forecast line 2: trend / detail (26 entries, indexed 0-25) ─────────
-    var forecastStrings1 as Array<Lang.ResourceId> = [
-        Rez.Strings.MT,   // 0  (none)
-        Rez.Strings.MT,   // 1  (none)
-        Rez.Strings.IM,   // 2  improving
-        Rez.Strings.LS,   // 3  becoming less settled
-        Rez.Strings.PS,   // 4  possible showers
-        Rez.Strings.IM,   // 5  improving
-        Rez.Strings.SL,   // 6  showery later
-        Rez.Strings.CL,   // 7  clearing later
-        Rez.Strings.PI,   // 8  probably improving
-        Rez.Strings.IM,   // 9  improving
-        Rez.Strings.SR,   // 10 some rain
-        Rez.Strings.SI,   // 11 short fine intervals
-        Rez.Strings.RL,   // 12 rain later
-        Rez.Strings.SR,   // 13 some rain
-        Rez.Strings.BI,   // 14 bright intervals
-        Rez.Strings.SY,   // 15 showers likely
-        Rez.Strings.MO,   // 16 (mostly)
-        Rez.Strings.MO,   // 17 (mostly)
-        Rez.Strings.WO,   // 18 worsening
-        Rez.Strings.VU,   // 19 very unsettled
-        Rez.Strings.SR,   // 20 some rain
-        Rez.Strings.WO,   // 21 worsening
-        Rez.Strings.MI,   // 22 may improve
-        Rez.Strings.MR,   // 23 much rain
-        Rez.Strings.FI,   // 24 at frequent intervals
-        Rez.Strings.MR    // 25 much rain
-    ] as Array<Lang.ResourceId>;
-
     // ── Sager lookup tables: wind octant × trend → base forecast code ──────
     // Wind octants: 0=Calm 1=N 2=NE 3=E 4=SE 5=S 6=SW 7=W 8=NW
     // Northern Hemisphere reference; Southern is mirrored at query time.
@@ -88,38 +58,22 @@ module Sager {
         85, 85, 80, 90, 95, 95
     ];
 
-    // ── String caches (loaded once, reused) ────────────────────────────────
-    var forecastCache0 as Array<String> = [];
-    var forecastCache1 as Array<String> = [];
+    // ── String cache (loaded once, reused) ──────────────────────────────────
+    var forecastCache as Array<String> = [];
 
-    function forecast0(f as Number) as String {
+    function forecast(f as Number) as String {
         var idx = f.toNumber();
-        if (idx < 0 || idx >= forecastStrings0.size()) {
+        if (idx < 0 || idx >= forecastStrings.size()) {
             return "";
         }
 
-        if (forecastCache0.size() == 0) {
-            for (var i = 0; i < forecastStrings0.size(); i++) {
-                forecastCache0.add(WatchUi.loadResource((forecastStrings0 as Array<Lang.ResourceId>)[i]) as String);
+        if (forecastCache.size() == 0) {
+            for (var i = 0; i < forecastStrings.size(); i++) {
+                forecastCache.add(WatchUi.loadResource((forecastStrings as Array<Lang.ResourceId>)[i]) as String);
             }
         }
 
-        return (forecastCache0 as Array<String>)[idx];
-    }
-
-    function forecast1(f as Number) as String {
-        var idx = f.toNumber();
-        if (idx < 0 || idx >= forecastStrings1.size()) {
-            return "";
-        }
-
-        if (forecastCache1.size() == 0) {
-            for (var i = 0; i < forecastStrings1.size(); i++) {
-                forecastCache1.add(WatchUi.loadResource((forecastStrings1 as Array<Lang.ResourceId>)[i]) as String);
-            }
-        }
-
-        return (forecastCache1 as Array<String>)[idx];
+        return (forecastCache as Array<String>)[idx];
     }
 
     // ── Convert 16-point compass (1-16) to 8-point octant (1-8); 0 = calm ─
@@ -148,7 +102,7 @@ module Sager {
     }
 
     // ── Main forecast entry ────────────────────────────────────────────────
-    // Returns: [forecastText0, forecastText1, forecastNumber, precipProbability]
+    // Returns: [forecastText, forecastNumber, precipProbability]
     //
     // forecastNumber severity bands for icon selection:
     //   0-1  → clear/fine    2-6  → fair/variable
@@ -191,7 +145,7 @@ module Sager {
         if (base < 0)  { base = 0; }
         if (base > 25) { base = 25; }
 
-        return [forecast0(base), forecast1(base), base, precipProb[base]];
+        return [forecast(base), base, precipProb[base]];
     }
 
 }
