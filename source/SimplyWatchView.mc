@@ -301,6 +301,12 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 var lastC = null;
                 var latestNonNull = null;
                 var oldestNonNull = null;
+                // Hourly snapshots for acceleration (sample 1 ≈ now, ~12 ≈ -1h, ~24 ≈ -2h)
+                var accelP0 = null;
+                var accelP1 = null;
+                var accelP2 = null;
+                var accelBest1 = 7;  // half-interval tolerance in sample count
+                var accelBest2 = 7;
                 var pressureIter = getPressureIterator();
                 var oldest = null;
 
@@ -325,6 +331,18 @@ class SimplyWatchView extends WatchUi.WatchFace {
                                     latestNonNull = data;
                                 }
                                 oldestNonNull = data;
+
+                                // Capture hourly snapshots for acceleration calc
+                                // Samples are ~5 min apart: index 12 ≈ -1h, 24 ≈ -2h
+                                if (sampleCount == 1) {
+                                    accelP0 = data;
+                                }
+                                var d1 = sampleCount - 12;
+                                if (d1 < 0) { d1 = -d1; }
+                                if (d1 < accelBest1) { accelBest1 = d1; accelP1 = data; }
+                                var d2 = sampleCount - 24;
+                                if (d2 < 0) { d2 = -d2; }
+                                if (d2 < accelBest2) { accelBest2 = d2; accelP2 = data; }
                             }
 
                             if (sampleCount == 1) {
@@ -413,6 +431,24 @@ class SimplyWatchView extends WatchUi.WatchFace {
                     } else if ((pressureDiff + mSteadyLimit) < 0) {
                         nextTrend = 2;
                     }
+
+                    // Acceleration-aware trend refinement
+                    if (accelP0 != null && accelP1 != null && accelP2 != null) {
+                        var a0 = (accelP0 as Float) / 100.0;
+                        var a1 = (accelP1 as Float) / 100.0;
+                        var a2 = (accelP2 as Float) / 100.0;
+                        var accel = a0 - 2.0 * a1 + a2;
+                        if (accel > -0.15 && accel < 0.15) { accel = 0.0; }
+
+                        if (nextTrend == 0 && accel <= -0.5) {
+                            nextTrend = 2;
+                        } else if (nextTrend == 2 && accel > 0.5) {
+                            nextTrend = 0;
+                        } else if (nextTrend == 1 && accel <= -1.0) {
+                            nextTrend = 1;
+                        }
+                    }
+
                     trend = nextTrend;
                 }
 

@@ -107,23 +107,23 @@ module Sager {
     // forecastNumber severity bands for icon selection:
     //   0-1  → clear/fine    2-6  → fair/variable
     //   7-21 → rain/snow     22-25 → storm
-    function WeatherForecast(z_hpa as Float or Number, z_month as Number, z_wind_dir as Number, z_trend as Number, z_where as Number) as Array {
+    function WeatherForecast(pressureHpa as Float or Number, month as Number, windDir as Number, trend as Number, hemisphere as Number) as Array {
 
         // ── Wind direction → octant, hemisphere-aware ──────────────────────
-        var octant = windToOctant(z_wind_dir);
-        if (z_where != 1) {
+        var octant = windToOctant(windDir);
+        if (hemisphere != 1) {
             octant = mirrorWind(octant);
         }
 
         // ── Sager table lookup: wind octant × barometric trend ─────────────
-        var base = (z_trend == 1) ? risingBase[octant]
-                 : (z_trend == 2) ? fallingBase[octant]
+        var base = (trend == 1) ? risingBase[octant]
+                 : (trend == 2) ? fallingBase[octant]
                  : steadyBase[octant];
 
         // ── Pressure-level modifier ────────────────────────────────────────
         // Shifts forecast toward better (high MSL) or worse (low MSL).
         // Altitude-safe: uses fixed MSL thresholds, not user-configurable range.
-        var pLevel = pressureLevel(z_hpa.toNumber());
+        var pLevel = pressureLevel(pressureHpa.toNumber());
         if (pLevel == 0) {
             base += 2;
         } else if (pLevel == 2) {
@@ -131,13 +131,13 @@ module Sager {
         }
 
         // ── Seasonal modifier ──────────────────────────────────────────────
-        var isSummer = (z_where == 1)
-            ? (z_month >= 4 && z_month <= 9)
-            : (z_month >= 10 || z_month <= 3);
+        var isSummer = (hemisphere == 1)
+            ? (month >= 4 && month <= 9)
+            : (month >= 10 || month <= 3);
 
-        if (z_trend == 2 && isSummer) {
+        if (trend == 2 && isSummer) {
             base += 1;   // summer convective storms intensify faster
-        } else if (z_trend == 1 && !isSummer) {
+        } else if (trend == 1 && !isSummer) {
             base -= 1;   // winter clearing is more decisive
         }
 
