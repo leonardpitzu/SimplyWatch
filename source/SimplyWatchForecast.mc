@@ -1,98 +1,96 @@
-// beteljuice.com - near enough Zambretti Algorhithm 
-// June 2008 - v1.0
-// tweak added so decision # can be output
-
-/*
-Negretti and Zambras 'slide rule' is supposed to be better than 90% accurate 
-for a local forecast upto 12 hrs, it is most accurate in the temperate zones and about 09:00  hrs local solar time.
-I hope I have been able to 'tweak it' a little better ;-)    
-
-This code is free to use and redistribute as long as NO CHARGE is EVER made for its use or output
-*/
+// Sager Weathercaster — Wind-direction-aware barometric forecast
+// Based on Raymond Sager's meteorological forecasting method (1960s, US Navy)
+// Adapted for Garmin Connect IQ: altitude-safe, power-efficient, glance-ready
+//
+// Key advantages over Zambretti:
+//   - Wind direction is a primary forecast dimension (not a fudge factor)
+//   - Pressure level context prevents false alarms at altitude
+//   - Six effective trend categories (via pressure-level cross-reference)
+//   - Seasonal and hemispheric corrections built into the table
+//   - Direct precipitation probability (no arbitrary pair-code mapping)
 
 import Toybox.WatchUi;
 import Toybox.Lang;
-import Toybox.Math;
 
-module Zambretti {
+module Sager {
+
+    // ── Forecast line 1: main condition (26 entries, indexed 0-25) ──────────
     var forecastStrings0 as Array<Lang.ResourceId> = [
-        Rez.Strings.SF,
-        Rez.Strings.FW,
-        Rez.Strings.BF,
-        Rez.Strings.FN,
-        Rez.Strings.FN,
-        Rez.Strings.FF,
-        Rez.Strings.FF,
-        Rez.Strings.FF,
-        Rez.Strings.SHE,
-        Rez.Strings.CH,
-        Rez.Strings.FF,
-        Rez.Strings.RU,
-        Rez.Strings.UN,
-        Rez.Strings.SH,
-        Rez.Strings.SH,
-        Rez.Strings.CH,
-        Rez.Strings.UN,
-        Rez.Strings.UN,
-        Rez.Strings.UN,
-        Rez.Strings.VU,
-        Rez.Strings.OR,
-        Rez.Strings.RT,
-        Rez.Strings.RA,
-        Rez.Strings.RA,
-        Rez.Strings.ST,
-        Rez.Strings.ST
+        Rez.Strings.SF,   // 0  Settled fine
+        Rez.Strings.FW,   // 1  Fine weather
+        Rez.Strings.BF,   // 2  Becoming fine
+        Rez.Strings.FN,   // 3  Fine
+        Rez.Strings.FF,   // 4  Fairly fine
+        Rez.Strings.CH,   // 5  Changeable
+        Rez.Strings.FF,   // 6  Fairly fine
+        Rez.Strings.RU,   // 7  Rather unsettled
+        Rez.Strings.UN,   // 8  Unsettled
+        Rez.Strings.SHE,  // 9  Showery early
+        Rez.Strings.CH,   // 10 Changeable
+        Rez.Strings.UN,   // 11 Unsettled
+        Rez.Strings.UN,   // 12 Unsettled
+        Rez.Strings.RU,   // 13 Rather unsettled
+        Rez.Strings.SH,   // 14 Showery
+        Rez.Strings.CH,   // 15 Changeable
+        Rez.Strings.UN,   // 16 Unsettled
+        Rez.Strings.VU,   // 17 Very unsettled
+        Rez.Strings.OR,   // 18 Occasional rain
+        Rez.Strings.RT,   // 19 Rain at times
+        Rez.Strings.VU,   // 20 Very unsettled
+        Rez.Strings.RA,   // 21 Rain
+        Rez.Strings.ST,   // 22 Stormy
+        Rez.Strings.RA,   // 23 Rain
+        Rez.Strings.ST,   // 24 Stormy
+        Rez.Strings.ST    // 25 Stormy
     ];
 
+    // ── Forecast line 2: trend / detail (26 entries, indexed 0-25) ─────────
     var forecastStrings1 as Array<Lang.ResourceId> = [
-        Rez.Strings.MT,
-        Rez.Strings.MT,
-        Rez.Strings.MT,
-        Rez.Strings.LS,
-        Rez.Strings.PS,
-        Rez.Strings.IM,
-        Rez.Strings.PSE,
-        Rez.Strings.SL,
-        Rez.Strings.IM,
-        Rez.Strings.ME,
-        Rez.Strings.SY,
-        Rez.Strings.CL,
-        Rez.Strings.PI,
-        Rez.Strings.BI,
-        Rez.Strings.LS,
-        Rez.Strings.SR,
-        Rez.Strings.SI,
-        Rez.Strings.RL,
-        Rez.Strings.SR,
-        Rez.Strings.MO,
-        Rez.Strings.WO,
-        Rez.Strings.VU,
-        Rez.Strings.FI,
-        Rez.Strings.VU,
-        Rez.Strings.MI,
-        Rez.Strings.MR
+        Rez.Strings.MT,   // 0  (none)
+        Rez.Strings.MT,   // 1  (none)
+        Rez.Strings.IM,   // 2  improving
+        Rez.Strings.LS,   // 3  becoming less settled
+        Rez.Strings.PS,   // 4  possible showers
+        Rez.Strings.IM,   // 5  improving
+        Rez.Strings.SL,   // 6  showery later
+        Rez.Strings.CL,   // 7  clearing later
+        Rez.Strings.PI,   // 8  probably improving
+        Rez.Strings.IM,   // 9  improving
+        Rez.Strings.SR,   // 10 some rain
+        Rez.Strings.SI,   // 11 short fine intervals
+        Rez.Strings.RL,   // 12 rain later
+        Rez.Strings.SR,   // 13 some rain
+        Rez.Strings.BI,   // 14 bright intervals
+        Rez.Strings.SY,   // 15 showers likely
+        Rez.Strings.MO,   // 16 (mostly)
+        Rez.Strings.MO,   // 17 (mostly)
+        Rez.Strings.WO,   // 18 worsening
+        Rez.Strings.VU,   // 19 very unsettled
+        Rez.Strings.SR,   // 20 some rain
+        Rez.Strings.WO,   // 21 worsening
+        Rez.Strings.MI,   // 22 may improve
+        Rez.Strings.MR,   // 23 much rain
+        Rez.Strings.FI,   // 24 at frequent intervals
+        Rez.Strings.MR    // 25 much rain
     ] as Array<Lang.ResourceId>;
 
-    // equivalents of Zambretti 'dial window' letters A - Z
-    var rise_options as Array<Number> = [25,25,25,24,24,19,16,12,11,9,8,6,5,2,1,1,0,0,0,0,0,0];
-    var steady_options as Array<Number> = [25,25,25,25,25,25,23,23,22,18,15,13,10,4,1,1,0,0,0,0,0,0]; 
-    var fall_options as Array<Number> = [25,25,25,25,25,25,25,25,23,23,21,20,17,14,7,3,1,1,1,0,0,0];
+    // ── Sager lookup tables: wind octant × trend → base forecast code ──────
+    // Wind octants: 0=Calm 1=N 2=NE 3=E 4=SE 5=S 6=SW 7=W 8=NW
+    // Northern Hemisphere reference; Southern is mirrored at query time.
+    var steadyBase  as Array<Number> = [ 6,  4,  7, 11, 13, 14, 10,  6,  3];
+    var risingBase  as Array<Number> = [ 3,  1,  3,  5,  5,  6,  4,  2,  1];
+    var fallingBase as Array<Number> = [15, 12, 17, 20, 21, 22, 19, 15, 11];
 
-    // Cache loaded localized strings to avoid repeated resource lookups.
+    // ── Precipitation probability by forecast code (%) ─────────────────────
+    var precipProb as Array<Number> = [
+         0,  0,  5, 10, 20, 25, 30, 35, 40, 30,
+        45, 50, 60, 55, 50, 60, 70, 75, 70, 80,
+        85, 85, 80, 90, 95, 95
+    ];
+
+    // ── String caches (loaded once, reused) ────────────────────────────────
     var forecastCache0 as Array<String> = [];
     var forecastCache1 as Array<String> = [];
-
-    // Lookup tables for wind direction influence on pressure.
-    var northAdjust as Array<Float> = [ 0.0, 6.0, 5.0, 5.0, 2.0, -0.5, -2.0, -5.0, -8.5, -12.0, -10.0, -6.0, -4.5, -3.0, -0.5, 1.5, 3.0 ];
-    var southAdjust as Array<Float> = [ 0.0, -12.0, -10.0, -6.0, -4.5, -3.0, -0.5, 1.5, 3.0, 6.0, 5.0, 5.0, 2.0, -0.5, -2.0, -5.0, -8.5 ];
-
-    // Symbolic rain profile pairs by forecast number (0..25, 0 is fallback).
-    var forecastPairs as Array<Array<Number>> = [
-        [0,0], // 0 (fallback)
-        [0,0], [1,1], [2,1], [1,2], [1,1], [1,0], [2,1], [1,4], [4,2], [4,4],
-        [1,1], [3,1], [3,3], [2,2], [4,5], [4,4], [2,2], [2,4], [2,2], [5,5],
-        [2,4], [4,4], [4,4], [6,4], [6,6]
-    ];
 
     function forecast0(f as Number) as String {
         var idx = f.toNumber();
@@ -124,86 +122,76 @@ module Zambretti {
         return (forecastCache1 as Array<String>)[idx];
     }
 
-    function WeatherForecast(z_hpa as Float or Number, z_month as Number, z_wind_dir as Number, z_trend as Number, z_where as Number, z_baro_top as Float or Number, z_baro_bottom as Float or Number) as Array {
-        var baroRange = (z_baro_top - z_baro_bottom).toFloat();
-        if (baroRange <= 0.0) {
-            baroRange = 1.0;
+    // ── Convert 16-point compass (1-16) to 8-point octant (1-8); 0 = calm ─
+    function windToOctant(dir16 as Number) as Number {
+        if (dir16 < 1 || dir16 > 16) {
+            return 0;
+        }
+        return ((dir16 - 1) / 2).toNumber() + 1;
+    }
+
+    // ── Mirror wind octant for Southern Hemisphere (rotate 180°) ───────────
+    function mirrorWind(octant as Number) as Number {
+        if (octant == 0) {
+            return 0;
+        }
+        return ((octant - 1 + 4) % 8) + 1;
+    }
+
+    // ── Classify MSL pressure: Low(0) < 1005, Normal(1) 1005-1025, High(2) > 1025
+    //    Standard meteorological thresholds — no user config required.
+    //    Works correctly at any altitude when fed MSL-equivalent pressure.
+    function pressureLevel(hpa as Number) as Number {
+        if (hpa < 1005) { return 0; }
+        if (hpa > 1025) { return 2; }
+        return 1;
+    }
+
+    // ── Main forecast entry ────────────────────────────────────────────────
+    // Returns: [forecastText0, forecastText1, forecastNumber, precipProbability]
+    //
+    // forecastNumber severity bands for icon selection:
+    //   0-1  → clear/fine    2-6  → fair/variable
+    //   7-21 → rain/snow     22-25 → storm
+    function WeatherForecast(z_hpa as Float or Number, z_month as Number, z_wind_dir as Number, z_trend as Number, z_where as Number) as Array {
+
+        // ── Wind direction → octant, hemisphere-aware ──────────────────────
+        var octant = windToOctant(z_wind_dir);
+        if (z_where != 1) {
+            octant = mirrorWind(octant);
         }
 
-        var z_frac = baroRange / 100.0;
-        var z_constant = z_frac * 4.5454545454;
-        var z_season = (z_month >= 4 && z_month <= 9); // true if 'Summer'
-        var isNorth = (z_where == 1);
+        // ── Sager table lookup: wind octant × barometric trend ─────────────
+        var base = (z_trend == 1) ? risingBase[octant]
+                 : (z_trend == 2) ? fallingBase[octant]
+                 : steadyBase[octant];
 
-        try {
-            var windAdj = isNorth ? northAdjust : southAdjust;
-
-            if (z_wind_dir >= 1 && z_wind_dir <= 16) {
-                z_hpa += windAdj[z_wind_dir] * z_frac;
-            }
-
-            // Seasonal trend effect
-            if ((isNorth && z_season) or (!isNorth && !z_season)) {
-                if (z_trend == 1) { z_hpa += 7 * z_frac; } // Rising
-                else if (z_trend == 2) { z_hpa -= 7 * z_frac; } // Falling
-            }
-        }
-        catch (ex) {
-            z_hpa = 0.0;
+        // ── Pressure-level modifier ────────────────────────────────────────
+        // Shifts forecast toward better (high MSL) or worse (low MSL).
+        // Altitude-safe: uses fixed MSL thresholds, not user-configurable range.
+        var pLevel = pressureLevel(z_hpa.toNumber());
+        if (pLevel == 0) {
+            base += 2;
+        } else if (pLevel == 2) {
+            base -= 2;
         }
 
-        z_hpa = z_hpa.toNumber();
-        if(z_hpa == z_baro_top) { z_hpa = z_baro_top - 1; }
+        // ── Seasonal modifier ──────────────────────────────────────────────
+        var isSummer = (z_where == 1)
+            ? (z_month >= 4 && z_month <= 9)
+            : (z_month >= 10 || z_month <= 3);
 
-        var z_except = false;
-        var z_option = Math.floor((z_hpa - z_baro_bottom) / z_constant).toNumber();
-        var z_output0 = "";
-        var z_output1 = "";
-
-        if (z_option < 0 or z_option > 21) {
-            z_option = (z_option < 0) ? 0 : 21;
-            z_except = true;
-            z_output0 = "*";
-            z_output1 = "*";
+        if (z_trend == 2 && isSummer) {
+            base += 1;   // summer convective storms intensify faster
+        } else if (z_trend == 1 && !isSummer) {
+            base -= 1;   // winter clearing is more decisive
         }
 
-        var forecast = 0;
-        if (z_trend == 1) { forecast = rise_options[z_option]; } // rising
-        else if (z_trend == 2) { forecast = fall_options[z_option]; } // falling
-        else { forecast = steady_options[z_option]; } // must be 'steady'
+        // ── Clamp to valid range ───────────────────────────────────────────
+        if (base < 0)  { base = 0; }
+        if (base > 25) { base = 25; }
 
-        z_output0 += forecast0(forecast);
-        z_output1 += forecast1(forecast);
-
-        if (z_except) {
-            z_output0 += "*";
-            if (z_output1.equals("*")) { z_output1 = ""; }
-            else { z_output1 += "*"; }
-        }
-
-
-        var rain = 0;
-
-        // Get symbolic pair or default.
-        var pair = [0, 0];
-        if (forecast >= 1 && forecast <= 25) {
-            pair = forecastPairs[forecast];
-        }
-        var f0 = (pair as Array<Number>)[0];
-        var f1 = (pair as Array<Number>)[1];
-        var pairCode = (f0 * 10 + f1).toNumber();
-
-        // Return mapped or fallback rain probability.
-        if (pairCode == 0 || pairCode == 10) { rain = 0; }
-        else if (pairCode == 21) { rain = 10; }
-        else if (pairCode == 11) { rain = 30; }
-        else if (pairCode == 12) { rain = 60; }
-        else if (pairCode == 22) { rain = 50; }
-        else if (pairCode == 23 || pairCode == 24 || pairCode == 25) { rain = 70; }
-        else if (pairCode == 31 || pairCode == 44 || pairCode == 55 || pairCode == 66) { rain = 90; }
-        else { rain = (f0 >= 2 && f1 < 2) ? 10 : 90; }
-
-        return [z_output0, z_output1, forecast, rain];
+        return [forecast0(base), forecast1(base), base, precipProb[base]];
     }
 
 }

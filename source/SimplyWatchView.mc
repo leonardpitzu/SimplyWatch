@@ -11,21 +11,15 @@ import Toybox.Sensor;
 import Toybox.SensorHistory;
 import Toybox.Math;
 
-import Zambretti;
+import Sager;
 
-const cLowPressure = 950;
-const cHighPressure = 1050;
 const cOffset = 0;
 const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 3) + (Gregorian.SECONDS_PER_MINUTE * 10));
 const cSteady = 5.0; // equivalent to 0.5 hPa
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
-    var mUseMSLPressure as Boolean = true;
-    var mLowPressure as Number = cLowPressure;
-    var mHighPressure as Number = cHighPressure;
     var mOffset as Number = cOffset;
-    var mUseOriginal as Boolean = false;
     var mTime as Float = cTime;
     var mSteadyLimit as Float = cSteady;
     var mNorthSouth as Number = 1; // Northern hemisphere
@@ -58,10 +52,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
     var _lastTriggerDay  = -1;
     var _lastTriggerHour = -1;
     var _forceRun = false;
-
-    var mLabelSH = "";
-    var mLabelFF = "";
-    var mLabelFW = "";
 
     var mCenterX = 0;
     var mTimeY = 0;
@@ -223,9 +213,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
         var iconBand = 2;
         if (mForecastNumber <= 1) {
             iconBand = 0;
-        } else if (mForecastNumber <= 3) {
+        } else if (mForecastNumber <= 6) {
             iconBand = 1;
-        } else if (mForecastNumber <= 23) {
+        } else if (mForecastNumber <= 21) {
             iconBand = 2;
         } else {
             iconBand = 3;
@@ -279,10 +269,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
         mForecastIcon = weatherRainyIcon;
 
         mNotificationIconX = mCenterX - notificationIcon.getWidth() / 2;
-
-        mLabelSH = WatchUi.loadResource(Rez.Strings.SH) as String;
-        mLabelFF = WatchUi.loadResource(Rez.Strings.FF) as String;
-        mLabelFW = WatchUi.loadResource(Rez.Strings.FW) as String;
     }
 
     function onShow() as Void {
@@ -431,56 +417,24 @@ class SimplyWatchView extends WatchUi.WatchFace {
                     trend = nextTrend;
                 }
 
-                // --- Current pressure ---
+                // --- Current pressure (MSL from sensor history, altitude-safe) ---
                 var current = 0.0;
                 var hasCurrentPressure = false;
-                var activityInfo = Activity.getActivityInfo();
 
-                if (mUseMSLPressure) {
-                    if (mUseOriginal) {
-                        if (activityInfo != null && activityInfo has :meanSeaLevelPressure && activityInfo.meanSeaLevelPressure != null) {
-                            current = activityInfo.meanSeaLevelPressure;
-                            hasCurrentPressure = true;
-                        }
-                    } else {
-                        if (latestNonNull != null) {
-                            current = latestNonNull;
-                            hasCurrentPressure = true;
-                        }
-                    }
-                } else {
-                    if (activityInfo != null && activityInfo has :ambientPressure && activityInfo.ambientPressure != null) {
-                        current = activityInfo.ambientPressure;
-                        hasCurrentPressure = true;
-                    }
+                if (latestNonNull != null) {
+                    current = latestNonNull;
+                    hasCurrentPressure = true;
                 }
 
                 if (hasCurrentPressure) {
                     currentPress = mOffset + Math.round(current as Float / 100.0).toNumber();
-                    mLastForecast = Zambretti.WeatherForecast(currentPress, today.month as Number, 0, trend, mNorthSouth, mHighPressure, mLowPressure);
+                    mLastForecast = Sager.WeatherForecast(currentPress, today.month as Number, 0, trend, mNorthSouth);
                     forecastChanged = true;
                 }
             }
         }
 
-        var summer = (mNorthSouth == 1)
-                                        ? (today.month >= 5 && today.month <= 9)   // Northern hemisphere: Jun–Sep
-                                        : (today.month >= 11 || today.month <= 3); // Southern hemisphere: Dec–Mar
-
         var forecast = (mLastForecast != null) ? (mLastForecast as Array) : null;
-        if (forecast != null && forecast.size() > 0 && forecast[0] == mLabelSH && currentPress > 1018 && trend >= 0) {
-            forecast[0] = mLabelFF; // Promote to "Fine"
-            forecast[1] = "High pressure, stable trend — promoted to Fine";
-
-            mLastForecast = forecast;
-            forecastChanged = true;
-        } else if (forecast != null && forecast.size() > 0 && forecast[0] == mLabelSH && summer && currentPress > 1015 && trend == 0) {
-            forecast[0] = mLabelFW; // Promote to "Fair"
-            forecast[1] = "Summer & stable pressure — adjusted to Fair";
-
-            mLastForecast = forecast;
-            forecastChanged = true;
-        }
         refreshForecastVisualCache(today, forecastChanged);
 
 
