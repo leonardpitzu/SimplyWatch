@@ -11,13 +11,11 @@ import Toybox.Math;
 
 import Sager;
 
-const cOffset = 0;
 const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 3) + (Gregorian.SECONDS_PER_MINUTE * 10));
 const cSteady = 5.0; // Pa dead-zone (~0.05 hPa)
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
-    var mOffset as Number = cOffset;
     var mTime as Float = cTime;
     var mSteadyLimit as Float = cSteady;
     var mNorthSouth as Number = 1; // Northern hemisphere
@@ -90,6 +88,34 @@ class SimplyWatchView extends WatchUi.WatchFace {
         }
 
         return null;
+    }
+
+    hidden function getSeaLevelPressure(stationPa as Float) as Number {
+        // Try OS-provided MSL pressure (requires prior GPS fix)
+        var activityInfo = Activity.getActivityInfo();
+        if (activityInfo != null && activityInfo has :meanSeaLevelPressure) {
+            var mslPa = activityInfo.meanSeaLevelPressure;
+            if (mslPa != null) {
+                return Math.round((mslPa as Float) / 100.0).toNumber();
+            }
+        }
+
+        // Fallback: elevation history + barometric formula
+        if ((Toybox has :SensorHistory) && (Toybox.SensorHistory has :getElevationHistory)) {
+            var elevIter = SensorHistory.getElevationHistory({:period => 1, :order => SensorHistory.ORDER_NEWEST_FIRST});
+            if (elevIter != null) {
+                var sample = elevIter.next();
+                if (sample != null && sample.data != null) {
+                    var altitude = (sample.data as Float);
+                    var stationHpa = stationPa / 100.0;
+                    var factor = Math.pow(1.0 - (0.0065 * altitude / 288.15), 5.255);
+                    return Math.round(stationHpa / factor).toNumber();
+                }
+            }
+        }
+
+        // Final fallback: raw station pressure
+        return Math.round(stationPa / 100.0).toNumber();
     }
 
     hidden function formatFloat(distance as Float, width as Number) as String {
@@ -270,7 +296,8 @@ class SimplyWatchView extends WatchUi.WatchFace {
     }
 
     function onShow() as Void {
-        var positionInfo = Activity.getActivityInfo().currentLocation;
+        var activityInfo = Activity.getActivityInfo();
+        var positionInfo = (activityInfo != null) ? activityInfo.currentLocation : null;
 
         mNorthSouth = (positionInfo != null) ? (positionInfo.toDegrees()[0] >= 0 ? 1 : 0) : mDefHemi;
 
@@ -414,9 +441,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 // Calculate pressure difference
                 if (cnt > 0) {
                     var pressureDiff = (p1 - p2) / cnt;
-                    if (pressureDiff < 0 && pressureDiff > -0.05) {
-                        pressureDiff = 0.0;
-                    }
 
                     var nextTrend = 0;
                     if (pressureDiff > mSteadyLimit) {
@@ -443,9 +467,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
                     trend = nextTrend;
                 }
 
-                // --- Current pressure (MSL from sensor history, altitude-safe) ---
+                // --- Current pressure (MSL, altitude-safe) ---
                 if (latestNonNull != null) {
-                    currentPress = mOffset + Math.round((latestNonNull as Float) / 100.0).toNumber();
+                    currentPress = getSeaLevelPressure(latestNonNull as Float);
                     mLastForecast = Sager.WeatherForecast(currentPress, today.month as Number, 0, trend, mNorthSouth);
                     forecastChanged = true;
                 }
