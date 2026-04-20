@@ -6,7 +6,6 @@ import Toybox.Activity;
 import Toybox.ActivityMonitor;
 import Toybox.Time;
 import Toybox.Time.Gregorian;
-import Toybox.Sensor;
 import Toybox.SensorHistory;
 import Toybox.Math;
 
@@ -347,17 +346,12 @@ class SimplyWatchView extends WatchUi.WatchFace {
 
                             if (sampleCount == 1) {
                                 firstA = data;
-                            } else if (sampleCount == 2) {
-                                firstB = data;
-                            } else if (sampleCount == 3) {
-                                firstC = data;
-                            }
-
-                            if (sampleCount == 1) {
                                 lastA = data;
                             } else if (sampleCount == 2) {
+                                firstB = data;
                                 lastB = data;
                             } else if (sampleCount == 3) {
+                                firstC = data;
                                 lastC = data;
                             } else {
                                 lastA = lastB;
@@ -391,10 +385,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 }
 
                 // --- Trend calculation ---
-                var final = sampleCount - 1;
                 var p1 = 0.0, p2 = 0.0, cnt = 0;
 
-                if (final > 4) {
+                if (sampleCount > 5) {
                     if (firstA != null && lastC != null) {
                         p1 += (firstA as Float);
                         p2 += (lastC as Float);
@@ -444,8 +437,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
                             nextTrend = 2;
                         } else if (nextTrend == 2 && accel > 0.5) {
                             nextTrend = 0;
-                        } else if (nextTrend == 1 && accel <= -1.0) {
-                            nextTrend = 1;
                         }
                     }
 
@@ -453,23 +444,14 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 }
 
                 // --- Current pressure (MSL from sensor history, altitude-safe) ---
-                var current = 0.0;
-                var hasCurrentPressure = false;
-
                 if (latestNonNull != null) {
-                    current = latestNonNull;
-                    hasCurrentPressure = true;
-                }
-
-                if (hasCurrentPressure) {
-                    currentPress = mOffset + Math.round(current as Float / 100.0).toNumber();
+                    currentPress = mOffset + Math.round((latestNonNull as Float) / 100.0).toNumber();
                     mLastForecast = Sager.WeatherForecast(currentPress, today.month as Number, 0, trend, mNorthSouth);
                     forecastChanged = true;
                 }
             }
         }
 
-        var forecast = (mLastForecast != null) ? (mLastForecast as Array) : null;
         refreshForecastVisualCache(today, forecastChanged);
 
 
@@ -514,15 +496,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
         // battery
         dc.drawBitmap(100, 225, batteryBitmap);
         dc.drawText(135, 230, Graphics.FONT_XTINY, mBatteryDaysText, Graphics.TEXT_JUSTIFY_LEFT);
-    }
-
-    function onHide() as Void {
-    }
-
-    function onExitSleep() as Void {
-    }
-
-    function onEnterSleep() as Void {
     }
 
 }
