@@ -310,7 +310,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 var oldest = null;
 
                 if (pressureIter != null) {
-                    var start = nowMoment.add(new Time.Duration(-mTime.toNumber()));
+                    var start = nowMoment.add(new Time.Duration(mTime.toNumber()));
                     oldest = pressureIter.getOldestSampleTime();
                     if (oldest == null || (start as Time.Moment).greaterThan(oldest as Time.Moment)) {
                         oldest = start;
