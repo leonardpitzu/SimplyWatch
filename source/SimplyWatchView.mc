@@ -8,11 +8,12 @@ import Toybox.Time;
 import Toybox.Time.Gregorian;
 import Toybox.SensorHistory;
 import Toybox.Math;
+import Toybox.Application.Storage;
 
 import Sager;
 
-const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 3) + (Gregorian.SECONDS_PER_MINUTE * 10));
-const cSteady = 5.0; // Pa dead-zone (~0.05 hPa)
+const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 4) + (Gregorian.SECONDS_PER_MINUTE * 10));
+const cSteady = 50.0; // Pa dead-zone (0.5 hPa)
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
@@ -121,10 +122,8 @@ class SimplyWatchView extends WatchUi.WatchFace {
     hidden function formatFloat(distance as Float, width as Number) as String {
         if (width == 3) {
             return distance < 10 ? distance.format("%.1f") : distance.format("%d");
-        } else if (width == 4) {
+        } else {
             return distance < 100 ? distance.format("%.1f") : distance.format("%d");
-        } else {  // width == 5
-            return distance < 1000 ? distance.format("%05.1f") : distance.format("%05d");
         }
     }
 
@@ -299,7 +298,22 @@ class SimplyWatchView extends WatchUi.WatchFace {
         var activityInfo = Activity.getActivityInfo();
         var positionInfo = (activityInfo != null) ? activityInfo.currentLocation : null;
 
-        mNorthSouth = (positionInfo != null) ? (positionInfo.toDegrees()[0] >= 0 ? 1 : 0) : mDefHemi;
+        if (positionInfo != null) {
+            mNorthSouth = positionInfo.toDegrees()[0] >= 0 ? 1 : 0;
+            Storage.setValue("hemisphere", mNorthSouth);
+        } else {
+            var stored = Storage.getValue("hemisphere");
+            if (stored != null && stored has :toNumber) {
+                var hemi = stored.toNumber();
+                if (hemi == 0 || hemi == 1) {
+                    mNorthSouth = hemi;
+                } else {
+                    mNorthSouth = mDefHemi;
+                }
+            } else {
+                mNorthSouth = mDefHemi;
+            }
+        }
 
         _forceRun = true;
 
@@ -311,8 +325,8 @@ class SimplyWatchView extends WatchUi.WatchFace {
         var today = Gregorian.info(nowMoment, Time.FORMAT_SHORT);
         var forecastChanged = false;
 
-        // Run if forced OR if we're exactly at a 3-hour boundary (hh:00)
-        if (_forceRun || ((today.hour % 3) == 0 && today.min == 0)) {
+        // Run if forced OR at the start of each hour
+        if (_forceRun || today.min == 0) {
             if (_lastTriggerDay != today.day || _lastTriggerHour != today.hour) {
                 _lastTriggerDay  = today.day;
                 _lastTriggerHour = today.hour;
@@ -461,6 +475,8 @@ class SimplyWatchView extends WatchUi.WatchFace {
                             nextTrend = 2;
                         } else if (nextTrend == 2 && accel > 0.5) {
                             nextTrend = 0;
+                        } else if (nextTrend == 1 && accel <= -1.0) {
+                            nextTrend = 1;
                         }
                     }
 
