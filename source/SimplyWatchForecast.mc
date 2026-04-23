@@ -131,13 +131,19 @@ module Sager {
         }
 
         // ── Seasonal modifier ──────────────────────────────────────────────
+        // Summer (Jun-Aug NH / Dec-Feb SH): convective storms intensify faster
+        // Winter (Dec-Feb NH / Jun-Aug SH): clearing is more decisive
+        // Spring & Autumn: no seasonal adjustment
         var isSummer = (hemisphere == 1)
-            ? (month >= 4 && month <= 9)
-            : (month >= 10 || month <= 3);
+            ? (month >= 6 && month <= 8)
+            : (month >= 12 || month <= 2);
+        var isWinter = (hemisphere == 1)
+            ? (month >= 12 || month <= 2)
+            : (month >= 6 && month <= 8);
 
         if (trend == 2 && isSummer) {
             base += 1;   // summer convective storms intensify faster
-        } else if (trend == 1 && !isSummer) {
+        } else if (trend == 1 && isWinter) {
             base -= 1;   // winter clearing is more decisive
         }
 

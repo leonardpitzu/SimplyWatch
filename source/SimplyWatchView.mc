@@ -13,7 +13,7 @@ import Toybox.Application.Storage;
 import Sager;
 
 const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 4) + (Gregorian.SECONDS_PER_MINUTE * 10));
-const cSteady = 50.0; // Pa dead-zone (0.5 hPa)
+const cSteady = 100.0; // Pa/h dead-zone (1.0 hPa/h) — above diurnal tide
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
@@ -456,10 +456,15 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 if (cnt > 0) {
                     var pressureDiff = (p1 - p2) / cnt;
 
+                    // Scale rate threshold (Pa/h) by window duration to get Pa total.
+                    var windowHours = (-mTime) / Gregorian.SECONDS_PER_HOUR.toFloat();
+                    if (windowHours < 0.5) { windowHours = 0.5; }
+                    var scaledLimit = mSteadyLimit * windowHours;
+
                     var nextTrend = 0;
-                    if (pressureDiff > mSteadyLimit) {
+                    if (pressureDiff > scaledLimit) {
                         nextTrend = 1;
-                    } else if ((pressureDiff + mSteadyLimit) < 0) {
+                    } else if ((pressureDiff + scaledLimit) < 0) {
                         nextTrend = 2;
                     }
 
