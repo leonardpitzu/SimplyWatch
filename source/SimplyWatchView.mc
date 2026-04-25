@@ -474,9 +474,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
                         var a1 = (accelP1 as Float) / 100.0;
                         var a2 = (accelP2 as Float) / 100.0;
                         var accel = a0 - 2.0 * a1 + a2;
-                        if (accel > -0.15 && accel < 0.15) { accel = 0.0; }
+                        if (accel > -0.3 && accel < 0.3) { accel = 0.0; }
 
-                        if (nextTrend == 0 && accel <= -0.5) {
+                        if (nextTrend == 0 && accel <= -0.8) {
                             nextTrend = 2;
                         } else if (nextTrend == 2 && accel > 0.5) {
                             nextTrend = 0;
