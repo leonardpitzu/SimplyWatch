@@ -136,11 +136,11 @@ class SimplyWatchView extends WatchUi.WatchFace {
     }
 
     hidden function getMinuteKey(today) as Number {
-        return ((((today.year * 100 + today.month) * 100 + today.day) * 100 + today.hour) * 100) + today.min;
+        return ((today.day * 24 + today.hour) * 60) + today.min;
     }
 
     hidden function getBatteryBucketKey(today) as Number {
-        return ((((today.year * 100 + today.month) * 100 + today.day) * 100 + today.hour) * 2) + Math.floor(today.min / 30.0).toNumber();
+        return ((today.day * 24 + today.hour) * 2) + (today.min >= 30 ? 1 : 0);
     }
 
     hidden function refreshDateCache(today, dc as Dc) as Void {
@@ -231,7 +231,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
         var isDaytime = (today.hour >= 7 && today.hour < 19);
         var winter = (mNorthSouth == 1)
                                         ? (today.month == 12 || today.month <= 2)   // Northern hemisphere: Dec–Feb
-                                        : (today.month >= 5 && today.month <= 9);   // Southern hemisphere: May–Sep
+                                        : (today.month >= 6 && today.month <= 8);   // Southern hemisphere: Jun–Aug
 
         var iconBand = 2;
         if (mForecastNumber <= 1) {
@@ -295,11 +295,28 @@ class SimplyWatchView extends WatchUi.WatchFace {
     }
 
     function onShow() as Void {
-        var activityInfo = Activity.getActivityInfo();
-        var positionInfo = (activityInfo != null) ? activityInfo.currentLocation : null;
+        var lat = null;
 
-        if (positionInfo != null) {
-            mNorthSouth = positionInfo.toDegrees()[0] >= 0 ? 1 : 0;
+        // 1. Try activity's cached location (free, no GPS fix)
+        var activityInfo = Activity.getActivityInfo();
+        if (activityInfo != null) {
+            var positionInfo = activityInfo.currentLocation;
+            if (positionInfo != null) {
+                lat = positionInfo.toDegrees()[0];
+            }
+        }
+
+        // 2. Try Weather observation location (synced from phone, free)
+        if (lat == null && Toybox has :Weather) {
+            var conditions = Toybox.Weather.getCurrentConditions();
+            if (conditions != null && conditions has :observationLocationPosition
+                && conditions.observationLocationPosition != null) {
+                lat = conditions.observationLocationPosition.toDegrees()[0];
+            }
+        }
+
+        if (lat != null) {
+            mNorthSouth = (lat >= 0) ? 1 : 0;
             Storage.setValue("hemisphere", mNorthSouth);
         } else {
             var stored = Storage.getValue("hemisphere");
