@@ -13,7 +13,7 @@ import Toybox.Application.Storage;
 import Sager;
 
 const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 4) + (Gregorian.SECONDS_PER_MINUTE * 10));
-const cSteady = 100.0; // Pa/h dead-zone (1.0 hPa/h) — above diurnal tide
+const cSteady = 60.0; // Pa/h dead-zone (0.6 hPa/h) — above diurnal tide
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
