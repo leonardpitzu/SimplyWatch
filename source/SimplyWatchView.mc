@@ -12,8 +12,8 @@ import Toybox.Application.Storage;
 
 import Sager;
 
-const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 4) + (Gregorian.SECONDS_PER_MINUTE * 10));
-const cSteady = 60.0; // Pa/h dead-zone (0.6 hPa/h) — above diurnal tide
+const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 6) + (Gregorian.SECONDS_PER_MINUTE * 10));
+const cSteady = 35.0; // Pa/h dead-zone (0.35 hPa/h) — tighter for barometer-only forecast
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
@@ -493,7 +493,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
                         var accel = a0 - 2.0 * a1 + a2;
                         if (accel > -0.3 && accel < 0.3) { accel = 0.0; }
 
-                        if (nextTrend == 0 && accel <= -0.8) {
+                        if (nextTrend == 0 && accel <= -0.4) {
                             nextTrend = 2;
                         } else if (nextTrend == 2 && accel > 0.5) {
                             nextTrend = 0;
