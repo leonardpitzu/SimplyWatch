@@ -14,7 +14,6 @@ import Sager;
 
 const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 6) + (Gregorian.SECONDS_PER_MINUTE * 10));
 const cSteady = 35.0; // Pa/h dead-zone (0.35 hPa/h) — tighter for barometer-only forecast
-const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 
 class SimplyWatchView extends WatchUi.WatchFace {
     var mTime as Float = cTime;
@@ -89,6 +88,13 @@ class SimplyWatchView extends WatchUi.WatchFace {
         }
 
         return null;
+    }
+
+    // Semidiurnal tide amplitude scaled by latitude: A ≈ 125 * cos²(lat) Pa.
+    // Computed at load time (onShow) when GPS is active; read from Storage afterwards.
+    hidden function getDiurnalAmplitude() as Float {
+        var stored = Storage.getValue("dA");
+        return (stored != null) ? (stored as Number).toFloat() : 60.0;
     }
 
     hidden function getSeaLevelPressure(stationPa as Float) as Number {
@@ -318,6 +324,10 @@ class SimplyWatchView extends WatchUi.WatchFace {
         if (lat != null) {
             mNorthSouth = (lat >= 0) ? 1 : 0;
             Storage.setValue("hemisphere", mNorthSouth);
+            // Cache diurnal tide amplitude from latitude: A ≈ 125 * cos²(lat) Pa
+            var latRad = (lat as Double).toFloat() * Math.PI / 180.0;
+            var cosLat = Math.cos(latRad);
+            Storage.setValue("dA", (125.0 * cosLat * cosLat).toNumber());
         } else {
             var stored = Storage.getValue("hemisphere");
             if (stored != null && stored has :toNumber) {
@@ -350,20 +360,23 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 _forceRun = false;
                 
                 var sampleCount = 0;
-                var firstA = null;
-                var firstB = null;
-                var firstC = null;
-                var lastA = null;
-                var lastB = null;
-                var lastC = null;
                 var latestNonNull = null;
                 var oldestNonNull = null;
-                // Hourly snapshots for acceleration (sample 1 ≈ now, ~12 ≈ -1h, ~24 ≈ -2h)
-                var accelP0 = null;
-                var accelP1 = null;
-                var accelP2 = null;
-                var accelBest1 = 7;  // half-interval tolerance in sample count
-                var accelBest2 = 7;
+                var pressureMax = null;
+                var pressureMin = null;
+                // Quadratic regression accumulators (single-pass least-squares)
+                // Fits y = a·x² + b·x + c over ALL samples.
+                // x = age in hours, y = pressure - reference (Pa, normalized)
+                var regN = 0;
+                var regRef = 0.0;
+                var regSx = 0.0;
+                var regSx2 = 0.0;
+                var regSx3 = 0.0;
+                var regSx4 = 0.0;
+                var regSy = 0.0;
+                var regSxy = 0.0;
+                var regSx2y = 0.0;
+                var t0sec = nowMoment.value();
                 var pressureIter = getPressureIterator();
                 var oldest = null;
 
@@ -374,108 +387,100 @@ class SimplyWatchView extends WatchUi.WatchFace {
                         oldest = start;
                     }
 
-                    var firstSample = pressureIter.next();
-                    if (firstSample != null) {
-                        var sample = firstSample as SensorHistory.SensorSample;
-                        var minus5Mins = new Time.Duration(-MINS_5);
+                    var sample = pressureIter.next();
+                    while (sample != null) {
+                        var s = sample as SensorHistory.SensorSample;
+                        sampleCount += 1;
+                        var data = s.data;
 
-                        while (true) {
-                            sampleCount += 1;
-                            var data = sample.data;
+                        if (data != null) {
+                            if (latestNonNull == null) {
+                                latestNonNull = data;
+                            }
+                            oldestNonNull = data;
 
-                            if (data != null) {
-                                if (latestNonNull == null) {
-                                    latestNonNull = data;
-                                }
-                                oldestNonNull = data;
-
-                                // Capture hourly snapshots for acceleration calc
-                                // Samples are ~5 min apart: index 12 ≈ -1h, 24 ≈ -2h
-                                if (sampleCount == 1) {
-                                    accelP0 = data;
-                                }
-                                var d1 = sampleCount - 12;
-                                if (d1 < 0) { d1 = -d1; }
-                                if (d1 < accelBest1) { accelBest1 = d1; accelP1 = data; }
-                                var d2 = sampleCount - 24;
-                                if (d2 < 0) { d2 = -d2; }
-                                if (d2 < accelBest2) { accelBest2 = d2; accelP2 = data; }
+                            // Track pressure range for persistence detection
+                            if (pressureMax == null || (data as Float) > (pressureMax as Float)) {
+                                pressureMax = data;
+                            }
+                            if (pressureMin == null || (data as Float) < (pressureMin as Float)) {
+                                pressureMin = data;
                             }
 
-                            if (sampleCount == 1) {
-                                firstA = data;
-                                lastA = data;
-                            } else if (sampleCount == 2) {
-                                firstB = data;
-                                lastB = data;
-                            } else if (sampleCount == 3) {
-                                firstC = data;
-                                lastC = data;
-                            } else {
-                                lastA = lastB;
-                                lastB = lastC;
-                                lastC = data;
-                            }
-
-                            if (!sample.when.greaterThan(oldest)) {
-                                break;
-                            }
-
-                            var sampleNextTime = sample.when.add(minus5Mins);
-                            var nextSample = pressureIter.next();
-                            if (nextSample == null) {
-                                break;
-                            }
-
-                            var selected = nextSample as SensorHistory.SensorSample;
-
-                            while (selected.when.greaterThan(sampleNextTime) && selected.when.greaterThan(oldest)) {
-                                var replacement = pressureIter.next();
-                                if (replacement == null) {
-                                    break;
-                                }
-                                selected = replacement as SensorHistory.SensorSample;
-                            }
-
-                            sample = selected;
+                            // Accumulate for quadratic regression
+                            var ageH = (t0sec - s.when.value()) / 3600.0;
+                            if (regN == 0) { regRef = data as Float; }
+                            var yNorm = (data as Float) - regRef;
+                            var xSq = ageH * ageH;
+                            regN += 1;
+                            regSx += ageH;
+                            regSx2 += xSq;
+                            regSx3 += xSq * ageH;
+                            regSx4 += xSq * xSq;
+                            regSy += yNorm;
+                            regSxy += ageH * yNorm;
+                            regSx2y += xSq * yNorm;
                         }
+
+                        if (!s.when.greaterThan(oldest as Time.Moment)) {
+                            break;
+                        }
+                        sample = pressureIter.next();
                     }
                 }
 
-                // --- Trend calculation ---
-                var p1 = 0.0, p2 = 0.0, cnt = 0;
+                // --- Trend calculation (quadratic regression) ---
+                // Single-pass parabolic fit y = a·x² + b·x + c over ALL samples.
+                // b = average slope (Pa/h into the past; negative = rising)
+                // a = curvature/acceleration (Pa/h²; positive = decelerating fall)
+                // Replaces point-sample acceleration and 3h endpoint comparison.
+                trend = 0;  // Safe default if insufficient data
+                var windowHours = (-mTime) / Gregorian.SECONDS_PER_HOUR.toFloat();
+                if (windowHours < 0.5) { windowHours = 0.5; }
 
-                if (sampleCount > 5) {
-                    if (firstA != null && lastC != null) {
-                        p1 += (firstA as Float);
-                        p2 += (lastC as Float);
-                        cnt += 1;
+                var pressureDiff = 0.0;
+                var quadA = 0.0;
+                var quadB = 0.0;
+
+                if (regN > 5) {
+                    var nf = regN.toFloat();
+                    var xMean = regSx / nf;
+
+                    // Centered moments (avoids solving full 3×3 system)
+                    var cx2 = regSx2 - regSx * regSx / nf;
+                    var cx4 = regSx4 - 4.0 * xMean * regSx3 + 6.0 * xMean * xMean * regSx2 - 3.0 * nf * xMean * xMean * xMean * xMean;
+                    var cxy = regSxy - regSx * regSy / nf;
+                    var cx2y = regSx2y - 2.0 * xMean * regSxy + xMean * xMean * regSy;
+
+                    // Linear slope (decoupled for symmetric data)
+                    if (cx2 > 0.001) {
+                        quadB = cxy / cx2;
                     }
-                    if (firstB != null && lastB != null) {
-                        p1 += (firstB as Float);
-                        p2 += (lastB as Float);
-                        cnt += 1;
+
+                    // Quadratic coefficient (acceleration)
+                    var denomQ = nf * cx4 - cx2 * cx2;
+                    if (denomQ > 0.001 || denomQ < -0.001) {
+                        quadA = (nf * cx2y - regSy * cx2) / denomQ;
                     }
-                    if (firstC != null && lastA != null) {
-                        p1 += (firstC as Float);
-                        p2 += (lastA as Float);
-                        cnt += 1;
-                    }
-                } else {
-                    if (latestNonNull != null && oldestNonNull != null) {
-                        p1 = latestNonNull;
-                        p2 = oldestNonNull;
-                        cnt = 1;
-                    }
+
+                    // 6h trend: y(0) - y(W) = W * [a*(2·xMean - W) - b]
+                    pressureDiff = windowHours * (quadA * (2.0 * xMean - windowHours) - quadB);
+                } else if (latestNonNull != null && oldestNonNull != null) {
+                    pressureDiff = (latestNonNull as Float) - (oldestNonNull as Float);
                 }
 
-                // Calculate pressure difference
-                if (cnt > 0) {
-                    var pressureDiff = (p1 - p2) / cnt;
+                if (regN > 5) {
+                    var nf = regN.toFloat();
+                    var xMean = regSx / nf;
 
-                    // Scale rate threshold (Pa/h) by window duration to get Pa total.
-                    var windowHours = (-mTime) / Gregorian.SECONDS_PER_HOUR.toFloat();
-                    if (windowHours < 0.5) { windowHours = 0.5; }
+                    // --- Diurnal tide correction ---
+                    var hourNow = today.hour.toFloat() + today.min.toFloat() / 60.0;
+                    var hourStart = hourNow + (mTime / Gregorian.SECONDS_PER_HOUR.toFloat());
+                    var phase = 2.0 * Math.PI / 12.0;
+                    var tideAmp = getDiurnalAmplitude();
+                    var diurnalCorr = tideAmp * (Math.cos(phase * (hourNow - 9.5)) - Math.cos(phase * (hourStart - 9.5)));
+                    pressureDiff = pressureDiff - diurnalCorr;
+
                     var scaledLimit = mSteadyLimit * windowHours;
 
                     var nextTrend = 0;
@@ -485,19 +490,50 @@ class SimplyWatchView extends WatchUi.WatchFace {
                         nextTrend = 2;
                     }
 
-                    // Acceleration-aware trend refinement
-                    if (accelP0 != null && accelP1 != null && accelP2 != null) {
-                        var a0 = (accelP0 as Float) / 100.0;
-                        var a1 = (accelP1 as Float) / 100.0;
-                        var a2 = (accelP2 as Float) / 100.0;
-                        var accel = a0 - 2.0 * a1 + a2;
-                        if (accel > -0.3 && accel < 0.3) { accel = 0.0; }
-
-                        if (nextTrend == 0 && accel <= -0.4) {
+                    // --- 3h front detection (from quadratic fit) ---
+                    // Uses predicted change over last 3h: y(0) - y(3) = 3*[a*(2·xMean-3) - b]
+                    // Much more robust than comparing two point-samples.
+                    if (nextTrend == 0) {
+                        var shortDiff = 3.0 * (quadA * (2.0 * xMean - 3.0) - quadB);
+                        var hourMid = hourNow - 3.0;
+                        var shortDiurnal = tideAmp * (Math.cos(phase * (hourNow - 9.5)) - Math.cos(phase * (hourMid - 9.5)));
+                        shortDiff = shortDiff - shortDiurnal;
+                        var shortLimit = mSteadyLimit * 3.0;
+                        if (shortDiff > shortLimit) {
+                            nextTrend = 1;
+                        } else if (shortDiff < -shortLimit) {
                             nextTrend = 2;
-                        } else if (nextTrend == 2 && accel > 0.5) {
-                            nextTrend = 0;
-                        } else if (nextTrend == 1 && accel <= -1.0) {
+                        }
+                    }
+
+                    // --- Acceleration from quadratic fit ---
+                    // 2a = second derivative (Pa/h²), same units as old P0-2P1+P2
+                    var accelHpa = 2.0 * quadA / 100.0;
+                    if (accelHpa > -0.3 && accelHpa < 0.3) { accelHpa = 0.0; }
+
+                    if (nextTrend == 0 && accelHpa <= -0.4) {
+                        nextTrend = 2;
+                    } else if (nextTrend == 2 && accelHpa > 0.5) {
+                        nextTrend = 0;
+                    }
+
+                    // --- Trend hysteresis: quick to alarm, slow to clear ---
+                    var prevTrend = Storage.getValue("pT");
+                    if (prevTrend != null && (prevTrend as Number) != 0 && nextTrend == 0) {
+                        var absDiff = pressureDiff;
+                        if (absDiff < 0) { absDiff = -absDiff; }
+                        if (absDiff > scaledLimit * 0.6) {
+                            nextTrend = prevTrend as Number;
+                        }
+                    }
+                    Storage.setValue("pT", nextTrend);
+
+                    // --- Front passage detection ---
+                    // Was falling, now steady, current slope shows recovery → rising.
+                    // slopeNow < 0 means pressure is currently rising.
+                    if (prevTrend != null && (prevTrend as Number) == 2 && nextTrend == 0) {
+                        var slopeNow = quadB - 2.0 * quadA * xMean;
+                        if (slopeNow < 0) {
                             nextTrend = 1;
                         }
                     }
@@ -505,10 +541,31 @@ class SimplyWatchView extends WatchUi.WatchFace {
                     trend = nextTrend;
                 }
 
+                // --- Persistence tracking (Storage-backed, survives reboots) ---
+                // Timestamp-guarded: max 1 increment per hour, survives instance recreation.
+                var steadyHours = 0;
+                if (pressureMax != null && pressureMin != null) {
+                    var pressureRange = (pressureMax as Float) - (pressureMin as Float);
+                    if (pressureRange < 200.0) {
+                        var stored = Storage.getValue("sH");
+                        var lastTs = Storage.getValue("sT");
+                        var nowSec = nowMoment.value();
+                        if (lastTs != null && (nowSec - (lastTs as Number)) < 3600) {
+                            // Less than 1h since last increment — just re-read
+                            steadyHours = (stored != null) ? (stored as Number) : 0;
+                        } else {
+                            // ≥1h elapsed or first run — increment
+                            steadyHours = (stored != null) ? (stored as Number) + 1 : 1;
+                            Storage.setValue("sT", nowSec);
+                        }
+                    }
+                }
+                Storage.setValue("sH", steadyHours);
+
                 // --- Current pressure (MSL, altitude-safe) ---
                 if (latestNonNull != null) {
                     currentPress = getSeaLevelPressure(latestNonNull as Float);
-                    mLastForecast = Sager.WeatherForecast(currentPress, today.month as Number, 0, trend, mNorthSouth);
+                    mLastForecast = Sager.WeatherForecast(currentPress, today.month as Number, 0, trend, mNorthSouth, steadyHours);
                     forecastChanged = true;
                 }
             }

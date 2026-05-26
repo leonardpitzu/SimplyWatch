@@ -11,6 +11,7 @@
 
 import Toybox.WatchUi;
 import Toybox.Lang;
+import Toybox.Math;
 
 module Sager {
 
@@ -92,12 +93,18 @@ module Sager {
         return ((octant - 1 + 4) % 8) + 1;
     }
 
-    // ── Classify MSL pressure: Low(0) < 1005, Normal(1) 1005-1025, High(2) > 1025
-    //    Standard meteorological thresholds — no user config required.
+    // ── Classify MSL pressure into Low(0) / Normal(1) / High(2) ──────────
+    //    Thresholds shift ±5 hPa seasonally following mid-latitude SLP variation.
+    //    NH winter (Jan): mean SLP ~1020 → thresholds shift UP (+5)
+    //    NH summer (Jul): mean SLP ~1013 → thresholds shift DOWN (-5)
     //    Works correctly at any altitude when fed MSL-equivalent pressure.
-    function pressureLevel(hpa as Number) as Number {
-        if (hpa < 1005) { return 0; }
-        if (hpa > 1025) { return 2; }
+    function pressureLevel(hpa as Number, month as Number, hemisphere as Number) as Number {
+        var seasonalOffset = (5.0 * Math.cos(2.0 * Math.PI * (month - 1).toFloat() / 12.0)).toNumber();
+        if (hemisphere != 1) { seasonalOffset = -seasonalOffset; }
+        var lowThreshold = 1005 + seasonalOffset;
+        var highThreshold = 1025 + seasonalOffset;
+        if (hpa < lowThreshold) { return 0; }
+        if (hpa > highThreshold) { return 2; }
         return 1;
     }
 
@@ -107,7 +114,7 @@ module Sager {
     // forecastNumber severity bands for icon selection:
     //   0-1  → clear/fine    2-6  → fair/variable
     //   7-21 → rain/snow     22-25 → storm
-    function WeatherForecast(pressureHpa as Float or Number, month as Number, windDir as Number, trend as Number, hemisphere as Number) as Array {
+    function WeatherForecast(pressureHpa as Float or Number, month as Number, windDir as Number, trend as Number, hemisphere as Number, steadyHours as Number) as Array {
 
         // ── Wind direction → octant, hemisphere-aware ──────────────────────
         var octant = windToOctant(windDir);
@@ -123,7 +130,7 @@ module Sager {
         // ── Pressure-level modifier ────────────────────────────────────────
         // Shifts forecast toward better (high MSL) or worse (low MSL).
         // Altitude-safe: uses fixed MSL thresholds, not user-configurable range.
-        var pLevel = pressureLevel(pressureHpa.toNumber());
+        var pLevel = pressureLevel(pressureHpa.toNumber(), month, hemisphere);
         if (pLevel == 0) {
             base += 2;
         } else if (pLevel == 2) {
@@ -145,6 +152,19 @@ module Sager {
             base += 1;   // summer convective storms intensify faster
         } else if (trend == 1 && isWinter) {
             base -= 1;   // winter clearing is more decisive
+        }
+
+        // ── Persistence modifier ───────────────────────────────────────────
+        // Prolonged pressure stability at Normal/High → settled weather.
+        // Only applies when base forecast is already in the fair range (0-6).
+        if (trend == 0 && pLevel >= 1 && base <= 6 && steadyHours >= 6) {
+            if (steadyHours >= 24) {
+                base = 0;   // Settled fine
+            } else if (steadyHours >= 12) {
+                base = 1;   // Fine weather
+            } else {
+                base = 3;   // Fine
+            }
         }
 
         // ── Clamp to valid range ───────────────────────────────────────────
