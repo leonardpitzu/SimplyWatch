@@ -29,7 +29,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
     var height;
     var width;
 
-    var batteryBitmap;
+    var mBatteryPct = 100;
     var StepsIcon;
     var DistanceIcon;
     var notificationIcon;
@@ -199,8 +199,11 @@ class SimplyWatchView extends WatchUi.WatchFace {
             mBatteryBucketKey = batteryBucketKey;
 
             var stats = System.getSystemStats();
-            if (stats != null && stats has :batteryInDays && stats.batteryInDays != null) {
-                mBatteryDaysText = (stats.batteryInDays + 1).toNumber().toString() + "d";
+            if (stats != null) {
+                if (stats has :batteryInDays && stats.batteryInDays != null) {
+                    mBatteryDaysText = (stats.batteryInDays + 1).toNumber().toString() + "d";
+                }
+                mBatteryPct = stats.battery.toNumber();
             }
         }
     }
@@ -281,7 +284,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
         mWeatherIconX = mCenterX - 95;
         mForecastTextX = mCenterX + 15;
 
-        batteryBitmap = WatchUi.loadResource(Rez.Drawables.BatteryIcon);
+
 
         StepsIcon = WatchUi.loadResource(Rez.Drawables.StepsIcon);
         DistanceIcon = WatchUi.loadResource(Rez.Drawables.DistanceIcon);
@@ -612,8 +615,17 @@ class SimplyWatchView extends WatchUi.WatchFace {
         dc.drawText(mForecastTextX, 195, Graphics.FONT_SYSTEM_XTINY, mForecastDisplayText, Graphics.TEXT_JUSTIFY_CENTER);
 
 
-        // battery
-        dc.drawBitmap(100, 225, batteryBitmap);
+        // battery - dynamic icon
+        var bx = 100;
+        var by = 235;
+        var bw = 26;
+        var bh = 12;
+        dc.drawRectangle(bx, by, bw, bh);
+        dc.fillRectangle(bx + bw, by + 3, 3, 6);
+        var fillW = ((bw - 4) * mBatteryPct / 100.0).toNumber();
+        if (fillW > 0) {
+            dc.fillRectangle(bx + 2, by + 2, fillW, bh - 4);
+        }
         dc.drawText(135, 230, Graphics.FONT_XTINY, mBatteryDaysText, Graphics.TEXT_JUSTIFY_LEFT);
     }
 
