@@ -9,3 +9,5 @@ internal-mir/
 *.log
 *.bak
 *.xmlx
+# Agent memory (local only — never publish)
+AGENTS.md
