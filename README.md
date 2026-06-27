@@ -1,6 +1,6 @@
 # SimplyWatch
 
-A clean [Garmin Connect IQ](https://developer.garmin.com/connect-iq/) watch face that puts time, activity stats, and a barometric weather forecast on your wrist — no phone connection required.
+A clean [Garmin Connect IQ](https://developer.garmin.com/connect-iq/) watch face that puts time, activity stats, and a barometric weather forecast on your wrist - no phone connection required.
 
 ## Algorithm
 
@@ -8,7 +8,7 @@ A clean [Garmin Connect IQ](https://developer.garmin.com/connect-iq/) watch face
 
 The forecast engine is based on Raymond Sager's meteorological method (1960s, US Navy). Unlike simpler barometric forecasters, Sager treats **wind direction as a primary forecast dimension** alongside pressure and its trend.
 
-Since a watch face has no compass input, wind direction is fixed to calm (octant 0). This makes the forecast purely pressure-driven — still effective for detecting approaching fronts, but without the directional refinement available in the companion widget ([SimplyWeather](https://github.com/leonardpitzu/SimplyWeather)).
+Since a watch face has no compass input, wind direction is fixed to calm (octant 0). This makes the forecast purely pressure-driven - still effective for detecting approaching fronts, but without the directional refinement available in the companion widget ([SimplyWeather](https://github.com/leonardpitzu/SimplyWeather)).
 
 **Inputs** (all derived on-device):
 - Current barometric pressure (hPa)
@@ -17,10 +17,10 @@ Since a watch face has no compass input, wind direction is fixed to calm (octant
 - Hemisphere (north / south, via GPS with Northern fallback)
 
 **How it works:**
-1. Three lookup tables (`steadyBase`, `risingBase`, `fallingBase`) produce a base forecast number (0–25).
-2. The base number is adjusted by pressure level (±2) — high pressure biases toward fair, low toward unsettled.
+1. Three lookup tables (`steadyBase`, `risingBase`, `fallingBase`) produce a base forecast number (0-25).
+2. The base number is adjusted by pressure level (±2) - high pressure biases toward fair, low toward unsettled.
 3. A seasonal modifier (±1) accounts for summer convective storms and winter clearing patterns.
-4. The final forecast number maps to a condition label (e.g. "Fairly fine, showers likely") and a precipitation probability (0–95%).
+4. The final forecast number maps to a condition label (e.g. "Fairly fine, showers likely") and a precipitation probability (0-95%).
 
 **26 forecast conditions** range from *Settled fine* (0) to *Stormy, much rain* (25).
 
@@ -34,9 +34,9 @@ A 0.15 hPa deadband filters sensor quantisation noise. Three refinement rules mo
 
 | Condition | Rule | Effect |
 |---|---|---|
-| Trend is steady, P″ ≤ −0.5 | Upgrade to falling | Early storm warning — pressure drop is accelerating before the 3 h window catches it |
-| Trend is falling, P″ > +0.5 | Downgrade to steady | Front is passing — pressure deceleration means conditions are stabilising |
-| Trend is rising, P″ ≤ −1.0 | Keep rising (no flip) | Noise filter — prevents a sensor glitch from overriding a genuine high-pressure build |
+| Trend is steady, P″ ≤ −0.5 | Upgrade to falling | Early storm warning - pressure drop is accelerating before the 3 h window catches it |
+| Trend is falling, P″ > +0.5 | Downgrade to steady | Front is passing - pressure deceleration means conditions are stabilising |
+| Trend is rising, P″ ≤ −1.0 | Keep rising (no flip) | Noise filter - prevents a sensor glitch from overriding a genuine high-pressure build |
 
 Hourly samples are captured by index proximity (sample 12 ≈ −1 h, sample 24 ≈ −2 h at ~5 min spacing) with a ±35 min tolerance window.
 
@@ -46,9 +46,9 @@ Barometric forecasting precision varies by terrain and weather pattern. Without 
 
 | Scenario | Accuracy | Lead time | Notes |
 |---|---|---|---|
-| **Urban / lowland** | ~75% | 2–4 h | Stable environment, pressure patterns read cleanly; acceleration catches convective buildups 30–60 min earlier |
-| **Mountain hiking (1500–2500 m)** | ~60% | 1–3 h | Altitude thermals and terrain-funnelled winds add noise. Always cross-check official mountain forecasts. |
-| **Coastal / seaside** | ~80% | 3–6 h | Flat terrain, clean pressure gradients — best case for barometric forecasting. Fronts approach predictably. |
+| **Urban / lowland** | ~75% | 2-4 h | Stable environment, pressure patterns read cleanly; acceleration catches convective buildups 30-60 min earlier |
+| **Mountain hiking (1500-2500 m)** | ~60% | 1-3 h | Altitude thermals and terrain-funnelled winds add noise. Always cross-check official mountain forecasts. |
+| **Coastal / seaside** | ~80% | 3-6 h | Flat terrain, clean pressure gradients - best case for barometric forecasting. Fronts approach predictably. |
 
 ## Features
 
@@ -67,27 +67,27 @@ Large, easy-to-read digital time in the centre of the display with the full date
 
 ### Weather Forecast
 
-- **Forecast text** — a short condition such as *Settled fine*, *Changeable, showers likely*, or *Stormy, much rain*, with a precipitation probability percentage when applicable.
-- **Weather icon** — context-aware by time of day and season (see table below).
-- **Hemisphere-aware** — automatically detects your hemisphere via GPS and adjusts seasonal corrections accordingly.
-- **Refresh cycle** — the forecast recalculates every 3 hours to balance accuracy with battery life.
+- **Forecast text** - a short condition such as *Settled fine*, *Changeable, showers likely*, or *Stormy, much rain*, with a precipitation probability percentage when applicable.
+- **Weather icon** - context-aware by time of day and season (see table below).
+- **Hemisphere-aware** - automatically detects your hemisphere via GPS and adjusts seasonal corrections accordingly.
+- **Refresh cycle** - the forecast recalculates every 3 hours to balance accuracy with battery life.
 
 ### Weather Icons
 
 The watch face selects an icon based on three inputs: the Sager forecast number, time of day, and season.
 
-**Day / night** is determined by a fixed 07:00–19:00 window.
+**Day / night** is determined by a fixed 07:00-19:00 window.
 
-**Season** is hemisphere-aware — Northern: Dec–Feb = cold season; Southern: May–Sep = cold season.
+**Season** is hemisphere-aware - Northern: Dec-Feb = cold season; Southern: May-Sep = cold season.
 
 | Forecast | Condition | Warm season | Cold season |
 |---|---|---|---|
-| 0–1 | Clear / fine | ☀️ Sun (day) / 🌙 Moon (night) | ☀️ Sun (day) / 🌙 Moon (night) |
-| 2–6 | Fair / variable | 🌤 Cloud-day / ☁️🌙 Cloud-night | 🌤 Cloud-day / ☁️🌙 Cloud-night |
-| 7–21 | Showers → rain | 🌧 Rainy | 🌨 Snowy |
-| 22–25 | Stormy | ⛈ Thunderstorm | 🌨❄️ Snowstorm |
+| 0-1 | Clear / fine | ☀️ Sun (day) / 🌙 Moon (night) | ☀️ Sun (day) / 🌙 Moon (night) |
+| 2-6 | Fair / variable | 🌤 Cloud-day / ☁️🌙 Cloud-night | 🌤 Cloud-day / ☁️🌙 Cloud-night |
+| 7-21 | Showers -> rain | 🌧 Rainy | 🌨 Snowy |
+| 22-25 | Stormy | ⛈ Thunderstorm | 🌨❄️ Snowstorm |
 
-> Note: unlike the companion widget, bands 7–21 are grouped into a single rain/snow icon (no day/night or light/heavy variants) to keep the watch face clean.
+> Note: unlike the companion widget, bands 7-21 are grouped into a single rain/snow icon (no day/night or light/heavy variants) to keep the watch face clean.
 
 ## Supported Devices
 
@@ -150,4 +150,4 @@ resources/
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
