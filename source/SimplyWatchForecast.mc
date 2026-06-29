@@ -98,14 +98,24 @@ module Sager {
     //    NH winter (Jan): mean SLP ~1020 → thresholds shift UP (+5)
     //    NH summer (Jul): mean SLP ~1013 → thresholds shift DOWN (-5)
     //    Works correctly at any altitude when fed MSL-equivalent pressure.
-    function pressureLevel(hpa as Number, month as Number, hemisphere as Number) as Number {
-        var seasonalOffset = (5.0 * Math.cos(2.0 * Math.PI * (month - 1).toFloat() / 12.0)).toNumber();
-        if (hemisphere != 1) { seasonalOffset = -seasonalOffset; }
-        var lowThreshold = 1005 + seasonalOffset;
-        var highThreshold = 1025 + seasonalOffset;
+    function pressureLevel(hpa as Number, month as Lang.Float or Lang.Number, hemisphere as Number) as Number {
+        var seasonalOffset = 5.0 * seasonalIndex(month, hemisphere);
+        var lowThreshold = 1005.0 + seasonalOffset;
+        var highThreshold = 1025.0 + seasonalOffset;
         if (hpa < lowThreshold) { return 0; }
         if (hpa > highThreshold) { return 2; }
         return 1;
+    }
+
+    // ── Continuous seasonality scalar ───────────────────────────────────────
+    //   +1 ≈ deep winter (mid-Jan, highest mean SLP), −1 ≈ deep summer (mid-Jul).
+    //   Hemisphere-aware. Replaces hard calendar-month bands so seasonal
+    //   corrections ramp smoothly instead of stepping on month boundaries.
+    //   Accepts a fractional month (e.g. 6.5 = mid-June) for day-level smoothness.
+    function seasonalIndex(month as Lang.Float or Lang.Number, hemisphere as Number) as Float {
+        var c = Math.cos(2.0 * Math.PI * (month.toFloat() - 1.0) / 12.0);
+        if (hemisphere != 1) { c = -c; }
+        return c;
     }
 
     // ── Main forecast entry ────────────────────────────────────────────────
@@ -114,7 +124,7 @@ module Sager {
     // forecastNumber severity bands for icon selection:
     //   0-1  → clear/fine    2-6  → fair/variable
     //   7-21 → rain/snow     22-25 → storm
-    function WeatherForecast(pressureHpa as Float or Number, month as Number, windDir as Number, trend as Number, hemisphere as Number, steadyHours as Number) as Array {
+    function WeatherForecast(pressureHpa as Float or Number, month as Lang.Float or Lang.Number, windDir as Number, trend as Number, hemisphere as Number, steadyHours as Number) as Array {
 
         // ── Wind direction → octant, hemisphere-aware ──────────────────────
         var octant = windToOctant(windDir);
@@ -123,36 +133,37 @@ module Sager {
         }
 
         // ── Sager table lookup: wind octant × barometric trend ─────────────
-        var base = (trend == 1) ? risingBase[octant]
-                 : (trend == 2) ? fallingBase[octant]
-                 : steadyBase[octant];
+        // Accumulated on a float so seasonal corrections can ramp continuously;
+        // rounded to a discrete forecast code once all modifiers are applied.
+        var baseF = ((trend == 1) ? risingBase[octant]
+                  : (trend == 2) ? fallingBase[octant]
+                  : steadyBase[octant]).toFloat();
 
         // ── Pressure-level modifier ────────────────────────────────────────
         // Shifts forecast toward better (high MSL) or worse (low MSL).
         // Altitude-safe: uses fixed MSL thresholds, not user-configurable range.
         var pLevel = pressureLevel(pressureHpa.toNumber(), month, hemisphere);
         if (pLevel == 0) {
-            base += 2;
+            baseF += 2.0;
         } else if (pLevel == 2) {
-            base -= 2;
+            baseF -= 2.0;
         }
 
-        // ── Seasonal modifier ──────────────────────────────────────────────
-        // Summer (Jun-Aug NH / Dec-Feb SH): convective storms intensify faster
-        // Winter (Dec-Feb NH / Jun-Aug SH): clearing is more decisive
-        // Spring & Autumn: no seasonal adjustment
-        var isSummer = (hemisphere == 1)
-            ? (month >= 6 && month <= 8)
-            : (month >= 12 || month <= 2);
-        var isWinter = (hemisphere == 1)
-            ? (month >= 12 || month <= 2)
-            : (month >= 6 && month <= 8);
-
-        if (trend == 2 && isSummer) {
-            base += 1;   // summer convective storms intensify faster
-        } else if (trend == 1 && isWinter) {
-            base -= 1;   // winter clearing is more decisive
+        // ── Seasonal modifier (continuous) ─────────────────────────────────
+        // Summer: convective storms intensify faster on a falling barometer.
+        // Winter: clearing on a rising barometer is more decisive.
+        // Both ramp with seasonality (±1 deep season → 0 at the equinoxes)
+        // instead of switching abruptly on calendar-month boundaries.
+        var season = seasonalIndex(month, hemisphere);
+        var summerness = (season < 0.0) ? -season : 0.0;
+        var winterness = (season > 0.0) ? season : 0.0;
+        if (trend == 2) {
+            baseF += summerness;   // summer convective storms intensify faster
+        } else if (trend == 1) {
+            baseF -= winterness;   // winter clearing is more decisive
         }
+
+        var base = Math.round(baseF).toNumber();
 
         // ── Persistence modifier ───────────────────────────────────────────
         // Prolonged pressure stability at Normal/High → settled weather.

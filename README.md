@@ -12,33 +12,29 @@ Since a watch face has no compass input, wind direction is fixed to calm (octant
 
 **Inputs** (all derived on-device):
 - Current barometric pressure (hPa)
-- Pressure trend over the last ~3 hours (rising / steady / falling)
-- Current month (for seasonal corrections)
+- Pressure trend over the last ~6 hours (rising / steady / falling)
+- Current date (for continuous seasonal corrections)
 - Hemisphere (north / south, via GPS with Northern fallback)
 
 **How it works:**
 1. Three lookup tables (`steadyBase`, `risingBase`, `fallingBase`) produce a base forecast number (0-25).
 2. The base number is adjusted by pressure level (±2) - high pressure biases toward fair, low toward unsettled.
-3. A seasonal modifier (±1) accounts for summer convective storms and winter clearing patterns.
+3. A seasonal modifier (±1) accounts for summer convective storms and winter clearing patterns, ramping continuously with the date instead of stepping at month boundaries.
 4. The final forecast number maps to a condition label (e.g. "Fairly fine, showers likely") and a precipitation probability (0-95%).
 
 **26 forecast conditions** range from *Settled fine* (0) to *Stormy, much rain* (25).
 
-### Pressure-Change Acceleration
+### Barometric Trend Analysis
 
-On top of the standard trend, the engine computes the **second derivative** of pressure (P″) using three hourly samples captured during the single-pass pressure iteration:
+The rising / steady / falling input to Sager is not a naive "now minus three hours ago" comparison - it comes from a small on-device regression pipeline run over the barometer's stored history during the single-pass iteration:
 
-$$P'' = P_0 - 2 P_{-1} + P_{-2}$$
+1. **Mean-sea-level reduction.** Every pressure sample is first reduced to mean sea level using the watch's barometric **elevation history**, so a change in altitude (a climb, a drive uphill, an elevator) cancels out and only genuine weather moves the trend. With no elevation history available it falls back to raw station pressure - identical to the previous behaviour.
+2. **Quadratic regression.** A single-pass least-squares parabola is fitted to the sea-level series across the trend window (~6 h). The fitted curve gives the net pressure change over the window, tested against a deadband (default 0.35 hPa/h) to decide rising, steady, or falling. Fitting a parabola rather than a straight line lets a curving pressure profile be read correctly.
+3. **Diurnal tide correction.** The atmosphere has a twice-daily pressure tide (~0.6 hPa swing at mid-latitudes). The expected tidal change over the window - amplitude derived from latitude - is subtracted, so the normal daily rhythm is never mistaken for an approaching system.
+4. **Short-window front detection.** An **independent** linear fit over only the **last 3 hours** flags a fast-moving front before the longer window catches it. Because it is computed from the recent samples alone, a large pressure wiggle earlier in the window cannot contaminate it.
+5. **Hysteresis & front passage.** The trend is quick to raise an alarm and slow to clear it, and a passing front (was falling, now levelling with pressure recovering) is upgraded to rising.
 
-A 0.15 hPa deadband filters sensor quantisation noise. Three refinement rules modify the trend input to Sager before the forecast lookup:
-
-| Condition | Rule | Effect |
-|---|---|---|
-| Trend is steady, P″ ≤ −0.5 | Upgrade to falling | Early storm warning - pressure drop is accelerating before the 3 h window catches it |
-| Trend is falling, P″ > +0.5 | Downgrade to steady | Front is passing - pressure deceleration means conditions are stabilising |
-| Trend is rising, P″ ≤ −1.0 | Keep rising (no flip) | Noise filter - prevents a sensor glitch from overriding a genuine high-pressure build |
-
-Hourly samples are captured by index proximity (sample 12 ≈ −1 h, sample 24 ≈ −2 h at ~5 min spacing) with a ±35 min tolerance window.
+A glitched elevation sample cannot poison the series: the sea-level reduction clamps altitude to a physical range. This pipeline replaces an earlier point-sample second-derivative ("acceleration") trigger that over-reacted to short pressure wiggles and to altitude changes.
 
 ### Expected Accuracy
 
@@ -46,8 +42,8 @@ Barometric forecasting precision varies by terrain and weather pattern. Without 
 
 | Scenario | Accuracy | Lead time | Notes |
 |---|---|---|---|
-| **Urban / lowland** | ~75% | 2-4 h | Stable environment, pressure patterns read cleanly; acceleration catches convective buildups 30-60 min earlier |
-| **Mountain hiking (1500-2500 m)** | ~60% | 1-3 h | Altitude thermals and terrain-funnelled winds add noise. Always cross-check official mountain forecasts. |
+| **Urban / lowland** | ~75% | 2-4 h | Stable environment, pressure patterns read cleanly; the short-window front detector catches convective buildups 30-60 min earlier |
+| **Mountain hiking (1500-2500 m)** | ~60% | 1-3 h | Trends stay valid as you change elevation (readings are sea-level-reduced), but altitude thermals and terrain-funnelled winds still add noise. Always cross-check official mountain forecasts. |
 | **Coastal / seaside** | ~80% | 3-6 h | Flat terrain, clean pressure gradients - best case for barometric forecasting. Fronts approach predictably. |
 
 ## Features
