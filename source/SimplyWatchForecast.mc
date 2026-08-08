@@ -78,6 +78,8 @@ module Sager {
     }
 
     // ── Convert 16-point compass (1-16) to 8-point octant (1-8); 0 = calm ─
+    //    The 8 on-octant points map exactly; the 8 halfway points are exact ties
+    //    and are broken clockwise here.
     function windToOctant(dir16 as Number) as Number {
         if (dir16 < 1 || dir16 > 16) {
             return 0;
@@ -99,6 +101,9 @@ module Sager {
     //    NH summer (Jul): mean SLP ~1013 → thresholds shift DOWN (-5)
     //    Works correctly at any altitude when fed MSL-equivalent pressure.
     function pressureLevel(hpa as Number, month as Lang.Float or Lang.Number, hemisphere as Number) as Number {
+        // Outside the record MSL range this cannot be a real sea-level pressure
+        // (e.g. raw station pressure at altitude), so stay neutral instead of biasing.
+        if (hpa < 870 || hpa > 1085) { return 1; }
         var seasonalOffset = 5.0 * seasonalIndex(month, hemisphere);
         var lowThreshold = 1005.0 + seasonalOffset;
         var highThreshold = 1025.0 + seasonalOffset;
@@ -113,7 +118,8 @@ module Sager {
     //   corrections ramp smoothly instead of stepping on month boundaries.
     //   Accepts a fractional month (e.g. 6.5 = mid-June) for day-level smoothness.
     function seasonalIndex(month as Lang.Float or Lang.Number, hemisphere as Number) as Float {
-        var c = Math.cos(2.0 * Math.PI * (month.toFloat() - 1.0) / 12.0);
+        // month is 1-based with 1.0 = Jan 1, so the extremum is anchored at 1.5 = mid-Jan.
+        var c = Math.cos(2.0 * Math.PI * (month.toFloat() - 1.5) / 12.0);
         if (hemisphere != 1) { c = -c; }
         return c;
     }
