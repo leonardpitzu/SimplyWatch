@@ -23,10 +23,14 @@ const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 // noise; gating raw 2-minute samples sits at 2 sigma and random-walks ~1 hPa.
 const ALT_SLEW_M_PER_H = 50.0;
 const ALT_ANCHOR_SEC = 600;
-// Diurnal S1 tide amplitude (Pa). Measured 33-96 Pa week to week at the reference
-// station against a textbook 10 Pa, and it does not follow a latitude law, so this
-// is the minimax value over the observed range rather than a fit.
-const S1_AMP_PA = 55.0;
+// A short window is only read when the data actually covers this much of it.
+// Extrapolating a thin window and then subtracting a full window of tide invents
+// a front out of nothing: 20 min blown up to 3 h clears the threshold on tide alone.
+const SHORT_WINDOW_MIN_COVERAGE = 0.8;
+// Forecast line: smallest system font, with clearance from the icon and the bezel.
+const FORECAST_FONT = Graphics.FONT_SYSTEM_XTINY;
+const FORECAST_ICON_GAP = 6;
+const FORECAST_EDGE_MARGIN = 16;
 // Persistence is measured from the pressure record itself, not from a run counter.
 const STEADY_LOOKBACK_SEC = 30 * 3600;
 const STEADY_STEP_SEC = 1800;
@@ -39,7 +43,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
     var mDefHemi as Number = 1; // Default hemisphere is Northern
 
     var trend = 0;
-    var currentPress = 0;
+    var currentPress as Number or Null = null;
 
     var mLastForecast = null;
 
@@ -98,6 +102,14 @@ class SimplyWatchView extends WatchUi.WatchFace {
     var mForecastIconKey = -1;
     var mForecastIcon = null;
 
+    // The line actually drawn, after fitting it to the gap left by the icon.
+    var mForecastFitText as String = "";
+    var mForecastFitSource as String = "";
+    var mForecastFitHalf as Number = -1;
+
+    var mLatDeg as Float or Null = null;
+    var mLonDeg as Float or Null = null;
+
     function getPressureIterator() as SensorHistory.SensorHistoryIterator or Null {
         // Check device for SensorHistory compatibility
         if ((Toybox has :SensorHistory) && (Toybox.SensorHistory has :getPressureHistory)) {
@@ -107,20 +119,18 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return null;
     }
 
-    // Semidiurnal tide amplitude scaled by latitude: A ≈ 125 * cos²(lat) Pa.
-    // Computed at load time (onShow) when GPS is active; read from Storage afterwards.
-    hidden function getDiurnalAmplitude() as Float {
-        var stored = Storage.getValue("dA");
-        return (stored != null) ? (stored as Number).toFloat() : 41.0;
+    // Position is held in members because isDaylight runs on every draw; reading
+    // Storage once a minute for something that changes hourly is wasted power.
+    hidden function getLatitude() as Float or Null {
+        return mLatDeg;
     }
 
     // Offset from civil clock time to local solar time (hours). The semidiurnal
     // atmospheric tide is phased to solar time, so reading the wrist clock directly
     // costs up to ±1.5 h of phase error inside a timezone, DST included.
     hidden function getSolarShiftHours() as Float {
-        var lon = Storage.getValue("lonDeg");
-        if (lon == null) { return 0.0; }
-        var shift = ((lon as Float) / 15.0) - (System.getClockTime().timeZoneOffset / 3600.0);
+        if (mLonDeg == null) { return 0.0; }
+        var shift = ((mLonDeg as Float) / 15.0) - (System.getClockTime().timeZoneOffset / 3600.0);
         // No timezone sits this far from solar time, so the cached longitude must be
         // stale after travel. A 6 h error would invert the 12 h tide, so use none.
         if (shift > 3.0 || shift < -3.0) { return 0.0; }
@@ -168,7 +178,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return (hours > 24) ? 24 : hours;
     }
 
-    hidden function getSeaLevelPressure(stationPa as Float) as Number {
+    hidden function getSeaLevelPressure(stationPa as Float) as Number or Null {
         // Try OS-provided MSL pressure (requires prior GPS fix)
         var activityInfo = Activity.getActivityInfo();
         if (activityInfo != null && activityInfo has :meanSeaLevelPressure) {
@@ -190,8 +200,10 @@ class SimplyWatchView extends WatchUi.WatchFace {
             }
         }
 
-        // Final fallback: raw station pressure
-        return Math.round(stationPa / 100.0).toNumber();
+        // No altitude is known, so the reading cannot be reduced. Returning the raw
+        // station value would read as a deep low at any altitude (945 hPa at 600 m)
+        // and apply a permanent two-code pessimism, so report that there is no level.
+        return null;
     }
 
     // Barometric reduction factor for a given altitude (m): P_msl = P_station / factor.
@@ -266,24 +278,25 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return altM;
     }
 
-    // Atmospheric tide at a local solar hour (Pa). S2 is the clean global resonance
-    // and scales from latitude; S1 is thermally driven and uses a fixed amplitude.
-    hidden function tidePa(solarHour as Float, s2Amp as Float) as Float {
-        return s2Amp * Math.cos(2.0 * Math.PI * (solarHour - 9.5) / 12.0)
-             + S1_AMP_PA * Math.cos(2.0 * Math.PI * (solarHour - 4.8) / 24.0);
+    // Atmospheric tide at a local solar hour (Pa). Shared with the glance so the two
+    // apps cannot disagree on the correction; see the Sager module.
+    hidden function tidePa(solarHour as Float, s2Amp as Float, s1 as Array<Float>) as Float {
+        return Sager.tidePa(solarHour, s2Amp, s1[0], s1[1]);
     }
 
     // Tide-corrected pressure change over the last `hours`, from a short-window linear
-    // fit. Returns null when the window is too thin or has no time spread.
+    // fit. Returns null when the window is too thin, has no time spread, or when the
+    // data does not actually reach back far enough to be worth extrapolating.
     hidden function shortWindowDiff(n as Number, sx as Float, sy as Float, sxy as Float,
-                                    sx2 as Float, hours as Float, hourNow as Float,
-                                    s2Amp as Float) as Float or Null {
+                                    sx2 as Float, spanH as Float, hours as Float,
+                                    hourNow as Float, s2Amp as Float, s1 as Array<Float>) as Float or Null {
         if (n < 3) { return null; }
+        if (spanH < hours * SHORT_WINDOW_MIN_COVERAGE) { return null; }
         var nf = n.toFloat();
         var denom = nf * sx2 - sx * sx;
         if (denom <= 0.001) { return null; }
         var slopeAge = (nf * sxy - sx * sy) / denom;
-        return (-hours * slopeAge) - (tidePa(hourNow, s2Amp) - tidePa(hourNow - hours, s2Amp));
+        return (-hours * slopeAge) - (tidePa(hourNow, s2Amp, s1) - tidePa(hourNow - hours, s2Amp, s1));
     }
 
     // Reduce a single station-pressure sample to MSL using the most-recent
@@ -383,6 +396,8 @@ class SimplyWatchView extends WatchUi.WatchFace {
             var stats = System.getSystemStats();
             if (stats != null) {
                 if (stats has :batteryInDays && stats.batteryInDays != null) {
+                    // +1 matches the watch's own estimator; truncating alone reads
+                    // a day short of what Garmin shows.
                     mBatteryDaysText = (stats.batteryInDays + 1).toNumber().toString() + "d";
                 }
                 mBatteryPct = stats.battery.toNumber();
@@ -427,7 +442,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
             mForecastIconKey = -1;
         }
 
-        var isDaytime = (today.hour >= 7 && today.hour < 19);
+        var isDaytime = isDaylight(today);
         var winter = (mNorthSouth == 1)
                                         ? (today.month == 12 || today.month <= 2)   // Northern hemisphere: Dec–Feb
                                         : (today.month >= 6 && today.month <= 8);   // Southern hemisphere: Jun–Aug
@@ -461,6 +476,68 @@ class SimplyWatchView extends WatchUi.WatchFace {
         }
     }
 
+    hidden function dayOfYear(today) as Number {
+        var cumulative = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+        return cumulative[today.month - 1] + today.day;
+    }
+
+    // Half-width available to the centred forecast line: the icon bounds it on the
+    // left, the screen edge on the right. Read from the icon rather than assumed,
+    // because the drawables are SVGs and the SDK decides their rendered size.
+    hidden function forecastMaxHalfWidth() as Number {
+        var iconRight = mWeatherIconX;
+        if (mForecastIcon != null) {
+            iconRight += mForecastIcon.getWidth();
+        }
+        var left = mForecastTextX - (iconRight + FORECAST_ICON_GAP);
+        var right = (width - FORECAST_EDGE_MARGIN) - mForecastTextX;
+        return (left < right) ? left : right;
+    }
+
+    // The glance shrinks the font to fit; this face is already on the smallest one,
+    // so the string has to give instead. The percentage goes first because the
+    // forecast word is what carries the meaning.
+    hidden function updateForecastFit(dc as Dc) as Void {
+        var maxHalf = forecastMaxHalfWidth();
+        if (maxHalf == mForecastFitHalf && mForecastDisplayText.equals(mForecastFitSource)) {
+            return;
+        }
+        mForecastFitSource = mForecastDisplayText;
+        mForecastFitHalf = maxHalf;
+
+        if (dc.getTextDimensions(mForecastDisplayText, FORECAST_FONT)[0] / 2 <= maxHalf) {
+            mForecastFitText = mForecastDisplayText;
+            return;
+        }
+        if (dc.getTextDimensions(mForecastLabel, FORECAST_FONT)[0] / 2 <= maxHalf) {
+            mForecastFitText = mForecastLabel;
+            return;
+        }
+        var s = mForecastLabel;
+        while (s.length() > 1
+               && dc.getTextDimensions(s + "...", FORECAST_FONT)[0] / 2 > maxHalf) {
+            s = s.substring(0, s.length() - 1);
+        }
+        mForecastFitText = s + "...";
+    }
+
+    // Sun above the horizon, from the cached position. A fixed 07:00-19:00 is wrong
+    // by up to 2.5 h here in December and never gets a polar day right.
+    hidden function isDaylight(today) as Boolean {
+        var lat = getLatitude();
+        if (lat == null) { return (today.hour >= 7 && today.hour < 19); }
+        var decl = -23.44 * Math.PI / 180.0
+                 * Math.cos(2.0 * Math.PI * (dayOfYear(today) + 10).toFloat() / 365.0);
+        var solarHour = today.hour.toFloat() + today.min.toFloat() / 60.0 + getSolarShiftHours();
+        var hourAngle = (solarHour - 12.0) * 15.0 * Math.PI / 180.0;
+        var latRad = (lat as Float) * Math.PI / 180.0;
+        var sinElev = Math.sin(latRad) * Math.sin(decl)
+                    + Math.cos(latRad) * Math.cos(decl) * Math.cos(hourAngle);
+        // Sunrise is defined at -0.833 deg, not at geometric zero: refraction lifts
+        // the disc by ~0.57 deg and its own radius accounts for the rest.
+        return sinElev > -0.01454;
+    }
+
     function initialize() {
         WatchFace.initialize();
         getSettings();
@@ -476,7 +553,16 @@ class SimplyWatchView extends WatchUi.WatchFace {
         catch (ex) {
             temp = null;
         }
-        mSteadyLimit = (temp == null) ? cSteady : (temp as Numeric).toFloat() * 100.0;
+        // Sager's own dead zone is 0.17 hPa/h. Outside roughly a decade around it the
+        // face either never leaves "steady" or never enters it, so clamp rather than
+        // trust a typo in the settings.
+        if (temp == null) {
+            mSteadyLimit = cSteady;
+        } else {
+            mSteadyLimit = (temp as Numeric).toFloat() * 100.0;
+            if (mSteadyLimit < 5.0) { mSteadyLimit = 5.0; }
+            else if (mSteadyLimit > 100.0) { mSteadyLimit = 100.0; }
+        }
 
         try {
             temp = Properties.getValue("Time");
@@ -495,6 +581,10 @@ class SimplyWatchView extends WatchUi.WatchFace {
             }
             mTime = (temp == null) ? cTime : (temp * -Gregorian.SECONDS_PER_HOUR - 10 * Gregorian.SECONDS_PER_MINUTE);
         }
+        // Under an hour there is not enough record to fit a parabola to, and the tide
+        // correction starts to dominate what is left.
+        var minWindow = 0.0 - Gregorian.SECONDS_PER_HOUR.toFloat();
+        if (mTime > minWindow) { mTime = minWindow; }
 
         // Default is 1 North, 0 South
         try {
@@ -569,13 +659,21 @@ class SimplyWatchView extends WatchUi.WatchFace {
 
         if (lat != null) {
             mNorthSouth = (lat >= 0) ? 1 : 0;
+            mLatDeg = (lat as Double).toFloat();
+            mLonDeg = (lon as Double).toFloat();
             Storage.setValue("hemisphere", mNorthSouth);
-            // Semidiurnal tide amplitude: A = 1.16 hPa * cos^3(lat) (Chapman & Lindzen)
-            var latRad = (lat as Double).toFloat() * Math.PI / 180.0;
-            var cosLat = Math.cos(latRad);
-            Storage.setValue("dA", (116.0 * cosLat * cosLat * cosLat).toNumber());
-            Storage.setValue("lonDeg", (lon as Double).toFloat());
+            Storage.setValue("latDeg", mLatDeg);
+            Storage.setValue("lonDeg", mLonDeg);
         } else {
+            // No fix this hour, so fall back to whatever the last one left behind.
+            if (mLatDeg == null) {
+                var storedLat = Storage.getValue("latDeg");
+                mLatDeg = (storedLat != null) ? (storedLat as Float) : null;
+            }
+            if (mLonDeg == null) {
+                var storedLon = Storage.getValue("lonDeg");
+                mLonDeg = (storedLon != null) ? (storedLon as Float) : null;
+            }
             var stored = Storage.getValue("hemisphere");
             if (stored != null && stored has :toNumber) {
                 var hemi = stored.toNumber();
@@ -613,10 +711,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
 
             refreshLocationContext();
 
-            var sampleCount = 0;
             var latestNonNull = null;
-            var pressureMax = null;
-            var pressureMin = null;
             // Quadratic regression accumulators (single-pass least-squares)
             // Fits y = a·x² + b·x + c over ALL samples.
             // x = age in hours, y = pressure - reference (Pa, normalized)
@@ -630,16 +725,21 @@ class SimplyWatchView extends WatchUi.WatchFace {
             var regSxy = 0.0;
             var regSx2y = 0.0;
             // Independent short-window linear-fit accumulators for front detection.
+            // The span each one actually covers is tracked so a thin window is not
+            // extrapolated to its full length.
             var short3N = 0;
             var short3Sx = 0.0;
             var short3Sy = 0.0;
             var short3Sxy = 0.0;
             var short3Sx2 = 0.0;
+            var short3Span = 0.0;
             var short15N = 0;
             var short15Sx = 0.0;
             var short15Sy = 0.0;
             var short15Sxy = 0.0;
             var short15Sx2 = 0.0;
+            var short15Span = 0.0;
+            var regSpan = 0.0;
             var t0sec = nowMoment.value();
             var pressureIter = getPressureIterator();
             var oldest = null;
@@ -674,7 +774,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
 
                     if (data != null && (acceptBefore == null || swhen <= (acceptBefore as Number))) {
                         acceptBefore = swhen - MINS_5;
-                        sampleCount += 1;
 
                         if (latestNonNull == null) {
                             latestNonNull = data;
@@ -690,16 +789,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
                         if (newestMsl == null) { newestMsl = pa; }
                         oldestMsl = pa;
 
-                        // Track pressure range for persistence detection (MSL)
-                        if (pressureMax == null || pa > (pressureMax as Float)) {
-                            pressureMax = pa;
-                        }
-                        if (pressureMin == null || pa < (pressureMin as Float)) {
-                            pressureMin = pa;
-                        }
-
                         // Accumulate for quadratic regression (MSL)
                         var ageH = (t0sec - swhen) / 3600.0;
+                        if (ageH > regSpan) { regSpan = ageH; }
                         if (regN == 0) { regRef = pa; }
                         var yNorm = pa - regRef;
                         var xSq = ageH * ageH;
@@ -719,12 +811,14 @@ class SimplyWatchView extends WatchUi.WatchFace {
                             short3Sy += yNorm;
                             short3Sxy += ageH * yNorm;
                             short3Sx2 += xSq;
+                            if (ageH > short3Span) { short3Span = ageH; }
                             if (ageH <= 1.5) {
                                 short15N += 1;
                                 short15Sx += ageH;
                                 short15Sy += yNorm;
                                 short15Sxy += ageH * yNorm;
                                 short15Sx2 += xSq;
+                                if (ageH > short15Span) { short15Span = ageH; }
                             }
                         }
                     }
@@ -748,6 +842,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
             var pressureDiff = 0.0;
             var quadA = 0.0;
             var quadB = 0.0;
+            var tideSpanH = windowHours;
 
             if (regN > 5) {
                 var nf = regN.toFloat();
@@ -774,17 +869,23 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 pressureDiff = windowHours * (quadA * (2.0 * xMean - windowHours) - quadB);
             } else if (newestMsl != null && oldestMsl != null) {
                 pressureDiff = (newestMsl as Float) - (oldestMsl as Float);
+                // The endpoint fallback spans only the data present, so the tide term
+                // must span the same. A full window of tide against 20 min of data is
+                // enough on its own to invent a front.
+                tideSpanH = regSpan;
+                if (tideSpanH < 0.000001) { tideSpanH = 0.000001; }
             }
 
             // Classification runs at any sample count so the endpoint fallback above
             // still yields a trend instead of silently reporting steady.
             // --- Atmospheric tide correction (S2 + S1, local solar time) ---
             var hourNow = today.hour.toFloat() + today.min.toFloat() / 60.0 + getSolarShiftHours();
-            var hourStart = hourNow + (mTime / Gregorian.SECONDS_PER_HOUR.toFloat());
-            var tideAmp = getDiurnalAmplitude();
-            pressureDiff = pressureDiff - (tidePa(hourNow, tideAmp) - tidePa(hourStart, tideAmp));
+            var latDeg = getLatitude();
+            var tideAmp = Sager.s2Amplitude(latDeg);
+            var s1 = Sager.s1Tide(latDeg);
+            pressureDiff = pressureDiff - (tidePa(hourNow, tideAmp, s1) - tidePa(hourNow - tideSpanH, tideAmp, s1));
 
-            var scaledLimit = mSteadyLimit * windowHours;
+            var scaledLimit = Sager.windowLimitPa(windowHours, mSteadyLimit, windowHours);
 
             var nextTrend = 0;
             if (pressureDiff > scaledLimit) {
@@ -799,9 +900,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
             // the quiet hours ahead of it. Verified to cut warning lag by 0.75-1.75 h.
             if (nextTrend == 0) {
                 var d3 = shortWindowDiff(short3N, short3Sx, short3Sy, short3Sxy, short3Sx2,
-                                         3.0, hourNow, tideAmp);
+                                         short3Span, 3.0, hourNow, tideAmp, s1);
                 if (d3 != null) {
-                    var lim3 = mSteadyLimit * 3.0;
+                    var lim3 = Sager.windowLimitPa(3.0, mSteadyLimit, windowHours);
                     if ((d3 as Float) > lim3) {
                         nextTrend = 1;
                     } else if ((d3 as Float) < -lim3) {
@@ -811,9 +912,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
             }
             if (nextTrend == 0) {
                 var d15 = shortWindowDiff(short15N, short15Sx, short15Sy, short15Sxy, short15Sx2,
-                                          1.5, hourNow, tideAmp);
+                                          short15Span, 1.5, hourNow, tideAmp, s1);
                 if (d15 != null) {
-                    var lim15 = mSteadyLimit * 1.5;
+                    var lim15 = Sager.windowLimitPa(1.5, mSteadyLimit, windowHours);
                     if ((d15 as Float) > lim15) {
                         nextTrend = 1;
                     } else if ((d15 as Float) < -lim15) {
@@ -831,7 +932,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
                     nextTrend = prevTrend as Number;
                 }
             }
-            Storage.setValue("pT", nextTrend);
 
             // --- Front passage detection ---
             // Was falling, now steady, current slope shows recovery → rising.
@@ -844,16 +944,22 @@ class SimplyWatchView extends WatchUi.WatchFace {
                 }
             }
 
+            // Persist what was actually shown. Storing before the promotion above left
+            // the next run seeing "steady" while the user had been shown "rising".
+            Storage.setValue("pT", nextTrend);
+
             trend = nextTrend;
 
             // --- Persistence tracking (measured from the pressure record) ---
             var steadyHours = measureSteadyHours(nowMoment.value());
 
-            // --- Current pressure (MSL, altitude-safe) ---
+            // --- Current pressure (MSL, altitude-safe; null when unreducible) ---
             if (latestNonNull != null) {
                 currentPress = getSeaLevelPressure(latestNonNull as Float);
                 var monthF = today.month.toFloat() + (today.day.toFloat() - 1.0) / 30.4;
-                mLastForecast = Sager.WeatherForecast(currentPress, monthF, 0, trend, mNorthSouth, steadyHours);
+                // The watch face has no compass, so the wind is genuinely unknown
+                // rather than calm.
+                mLastForecast = Sager.WeatherForecast(currentPress, monthF, null, trend, mNorthSouth, steadyHours);
                 forecastChanged = true;
             }
         }
@@ -896,7 +1002,8 @@ class SimplyWatchView extends WatchUi.WatchFace {
         if (mForecastIcon != null) {
             dc.drawBitmap(mWeatherIconX, 190, mForecastIcon);
         }
-        dc.drawText(mForecastTextX, 195, Graphics.FONT_SYSTEM_XTINY, mForecastDisplayText, Graphics.TEXT_JUSTIFY_CENTER);
+        updateForecastFit(dc);
+        dc.drawText(mForecastTextX, 195, FORECAST_FONT, mForecastFitText, Graphics.TEXT_JUSTIFY_CENTER);
 
 
         // battery - dynamic icon
