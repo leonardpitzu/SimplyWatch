@@ -102,10 +102,10 @@ class SimplyWatchView extends WatchUi.WatchFace {
     var mForecastIconKey = -1;
     var mForecastIcon = null;
 
-    // The line actually drawn, after fitting it to the gap left by the icon.
+    // The line actually drawn, plus the block geometry derived from it.
     var mForecastFitText as String = "";
     var mForecastFitSource as String = "";
-    var mForecastFitHalf as Number = -1;
+    var mForecastFitIconW as Number = -1;
 
     var mLatDeg as Float or Null = null;
     var mLonDeg as Float or Null = null;
@@ -481,44 +481,40 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return cumulative[today.month - 1] + today.day;
     }
 
-    // Half-width available to the centred forecast line: the icon bounds it on the
-    // left, the screen edge on the right. Read from the icon rather than assumed,
-    // because the drawables are SVGs and the SDK decides their rendered size.
-    hidden function forecastMaxHalfWidth() as Number {
-        var iconRight = mWeatherIconX;
-        if (mForecastIcon != null) {
-            iconRight += mForecastIcon.getWidth();
-        }
-        var left = mForecastTextX - (iconRight + FORECAST_ICON_GAP);
-        var right = (width - FORECAST_EDGE_MARGIN) - mForecastTextX;
-        return (left < right) ? left : right;
-    }
-
-    // The glance shrinks the font to fit; this face is already on the smallest one,
-    // so the string has to give instead. The percentage goes first because the
-    // forecast word is what carries the meaning.
+    // Icon and line are laid out as one block and centred together, so the whole
+    // width between the bezels is available. The icon width is read rather than
+    // assumed, because the drawables are SVGs and the SDK decides their size.
     hidden function updateForecastFit(dc as Dc) as Void {
-        var maxHalf = forecastMaxHalfWidth();
-        if (maxHalf == mForecastFitHalf && mForecastDisplayText.equals(mForecastFitSource)) {
+        var iconW = (mForecastIcon != null) ? (mForecastIcon.getWidth() as Number) : 0;
+        if (iconW == mForecastFitIconW && mForecastDisplayText.equals(mForecastFitSource)) {
             return;
         }
         mForecastFitSource = mForecastDisplayText;
-        mForecastFitHalf = maxHalf;
+        mForecastFitIconW = iconW;
 
-        if (dc.getTextDimensions(mForecastDisplayText, FORECAST_FONT)[0] / 2 <= maxHalf) {
-            mForecastFitText = mForecastDisplayText;
-            return;
-        }
-        if (dc.getTextDimensions(mForecastLabel, FORECAST_FONT)[0] / 2 <= maxHalf) {
+        var lead = (iconW > 0) ? iconW + FORECAST_ICON_GAP : 0;
+        var maxText = width - (2 * FORECAST_EDGE_MARGIN) - lead;
+
+        mForecastFitText = mForecastDisplayText;
+        var textW = dc.getTextDimensions(mForecastFitText, FORECAST_FONT)[0];
+        // Only reachable on a narrower screen than this face targets; the percentage
+        // goes first because the forecast word is what carries the meaning.
+        if (textW > maxText) {
             mForecastFitText = mForecastLabel;
-            return;
+            textW = dc.getTextDimensions(mForecastFitText, FORECAST_FONT)[0];
         }
-        var s = mForecastLabel;
-        while (s.length() > 1
-               && dc.getTextDimensions(s + "...", FORECAST_FONT)[0] / 2 > maxHalf) {
-            s = s.substring(0, s.length() - 1);
+        if (textW > maxText) {
+            var s = mForecastLabel;
+            while (s.length() > 1
+                   && dc.getTextDimensions(s + "...", FORECAST_FONT)[0] > maxText) {
+                s = s.substring(0, s.length() - 1);
+            }
+            mForecastFitText = s + "...";
+            textW = dc.getTextDimensions(mForecastFitText, FORECAST_FONT)[0];
         }
-        mForecastFitText = s + "...";
+
+        mWeatherIconX = (width - (lead + textW)) / 2;
+        mForecastTextX = mWeatherIconX + lead;
     }
 
     // Sun above the horizon, from the cached position. A fixed 07:00-19:00 is wrong
@@ -607,8 +603,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
         mCenterX = width / 2;
         mTimeY = (height / 2) - 80;
         mDateY = (height / 2) + 23;
-        mWeatherIconX = mCenterX - 95;
-        mForecastTextX = mCenterX + 15;
+        // mWeatherIconX / mForecastTextX are derived per forecast in updateForecastFit.
 
 
 
@@ -999,11 +994,11 @@ class SimplyWatchView extends WatchUi.WatchFace {
 
 
         // forecast
+        updateForecastFit(dc);
         if (mForecastIcon != null) {
             dc.drawBitmap(mWeatherIconX, 190, mForecastIcon);
         }
-        updateForecastFit(dc);
-        dc.drawText(mForecastTextX, 195, FORECAST_FONT, mForecastFitText, Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(mForecastTextX, 195, FORECAST_FONT, mForecastFitText, Graphics.TEXT_JUSTIFY_LEFT);
 
 
         // battery - dynamic icon
