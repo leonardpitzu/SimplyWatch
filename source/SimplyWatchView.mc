@@ -27,10 +27,13 @@ const ALT_ANCHOR_SEC = 600;
 // Extrapolating a thin window and then subtracting a full window of tide invents
 // a front out of nothing: 20 min blown up to 3 h clears the threshold on tide alone.
 const SHORT_WINDOW_MIN_COVERAGE = 0.8;
-// Forecast line: smallest system font, with clearance from the icon and the bezel.
+// Forecast line: smallest system font. Bezel clearance is measured from the round
+// screen at layout time, so only a small aesthetic pad is fixed here.
 const FORECAST_FONT = Graphics.FONT_SYSTEM_XTINY;
-const FORECAST_ICON_GAP = 6;
-const FORECAST_EDGE_MARGIN = 16;
+const FORECAST_ICON_GAP = 4;
+const FORECAST_EDGE_PAD = 3;
+const FORECAST_ICON_Y = 190;
+const FORECAST_TEXT_Y = 195;
 // Persistence is measured from the pressure record itself, not from a run counter.
 const STEADY_LOOKBACK_SEC = 30 * 3600;
 const STEADY_STEP_SEC = 1800;
@@ -481,9 +484,20 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return cumulative[today.month - 1] + today.day;
     }
 
-    // Icon and line are laid out as one block and centred together, so the whole
-    // width between the bezels is available. The icon width is read rather than
-    // assumed, because the drawables are SVGs and the SDK decides their size.
+    // Horizontal span of the round screen at a given y.
+    hidden function chordWidth(y as Number) as Number {
+        var r = width / 2.0;
+        var dy = y.toFloat() - (height / 2.0);
+        var inside = r * r - dy * dy;
+        if (inside <= 0.0) { return 0; }
+        return (2.0 * Math.sqrt(inside)).toNumber();
+    }
+
+    // Icon and line are laid out as one block and centred together. The screen is
+    // round, so the width available is the chord at the block's lowest pixel, not a
+    // constant margin: at y=220 that is 188px against the 228px a 16px margin assumed,
+    // which is what clipped the bottom of the last glyph. The icon size is read rather
+    // than assumed, because the drawables are SVGs and the SDK decides their size.
     hidden function updateForecastFit(dc as Dc) as Void {
         var iconW = (mForecastIcon != null) ? (mForecastIcon.getWidth() as Number) : 0;
         if (iconW == mForecastFitIconW && mForecastDisplayText.equals(mForecastFitSource)) {
@@ -493,12 +507,21 @@ class SimplyWatchView extends WatchUi.WatchFace {
         mForecastFitIconW = iconW;
 
         var lead = (iconW > 0) ? iconW + FORECAST_ICON_GAP : 0;
-        var maxText = width - (2 * FORECAST_EDGE_MARGIN) - lead;
+        var bottom = FORECAST_TEXT_Y + dc.getFontHeight(FORECAST_FONT);
+        if (mForecastIcon != null) {
+            var iconBottom = FORECAST_ICON_Y + (mForecastIcon.getHeight() as Number);
+            if (iconBottom > bottom) { bottom = iconBottom; }
+        }
+        var maxText = chordWidth(bottom) - (2 * FORECAST_EDGE_PAD) - lead;
 
         mForecastFitText = mForecastDisplayText;
         var textW = dc.getTextDimensions(mForecastFitText, FORECAST_FONT)[0];
-        // Only reachable on a narrower screen than this face targets; the percentage
-        // goes first because the forecast word is what carries the meaning.
+        // Degrade one rung at a time: the brackets go before the number and the number
+        // before the words, because the forecast word is what carries the meaning.
+        if (textW > maxText && mForecastChance != 0) {
+            mForecastFitText = mForecastLabel + " " + mForecastChance.toString() + "%";
+            textW = dc.getTextDimensions(mForecastFitText, FORECAST_FONT)[0];
+        }
         if (textW > maxText) {
             mForecastFitText = mForecastLabel;
             textW = dc.getTextDimensions(mForecastFitText, FORECAST_FONT)[0];
@@ -996,9 +1019,9 @@ class SimplyWatchView extends WatchUi.WatchFace {
         // forecast
         updateForecastFit(dc);
         if (mForecastIcon != null) {
-            dc.drawBitmap(mWeatherIconX, 190, mForecastIcon);
+            dc.drawBitmap(mWeatherIconX, FORECAST_ICON_Y, mForecastIcon);
         }
-        dc.drawText(mForecastTextX, 195, FORECAST_FONT, mForecastFitText, Graphics.TEXT_JUSTIFY_LEFT);
+        dc.drawText(mForecastTextX, FORECAST_TEXT_Y, FORECAST_FONT, mForecastFitText, Graphics.TEXT_JUSTIFY_LEFT);
 
 
         // battery - dynamic icon
