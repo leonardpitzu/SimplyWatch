@@ -195,6 +195,121 @@ module Sager {
         return steadyPaPerH * mainHours * tideUncertaintyPa(hours) / reference;
     }
 
+    // ── Learned daily cycle ─────────────────────────────────────────────────
+    //   S1 is thermally driven, so at a given site it is whatever the local land
+    //   and terrain make it, and a zonal mean cannot know that: at the reference
+    //   station S1 runs 84 Pa at 5.3 h against the table's 21 Pa at 9.0 h.
+    //   Differenced over the main window that leftover wave is worth ~107 Pa
+    //   against a ~105 Pa threshold, i.e. the afternoon heating alone reads as a
+    //   front. So the daily cycle is measured here rather than assumed.
+    //
+    //   The measurement is one residual at a time: the mean over 24 h is an exact
+    //   null for both harmonics, and being centred it also cancels the synoptic
+    //   ramp at the middle of the window, so the sample 12 h back minus that mean
+    //   is the daily cycle plus noise. Residuals are averaged into solar-hour
+    //   bins, and it is that averaging across days that removes the noise. A
+    //   least-squares fit over a trailing day or two instead cannot separate the
+    //   two and lands 30-40% high with an unstable phase.
+    const LEARN_WINDOW_SEC = 86400;
+    const LEARN_LAG_SEC = 43200;
+    const LEARN_MIN_COVERAGE = 0.96;
+    const LEARN_DECIMATE_SEC = 900;
+    const LEARN_ALPHA = 0.3;
+    const LEARN_MIN_BINS = 12;
+    // Hourly slots: 24 h of context plus the sample being judged.
+    const LEARN_RING_SLOTS = 25;
+    const LEARN_RING_MAX_GAP_SEC = 5400;
+    // A scan that came back empty keeps coming back empty until the record is long
+    // enough to centre a window in, so it is retried on a timer, never hourly.
+    const LEARN_RESCAN_SEC = 21600;
+    // This far from the daily mean is synoptic weather, not a daily cycle.
+    const LEARN_MAX_RESIDUAL_PA = 400.0;
+    const LEARN_MAX_AMP_PA = 300.0;
+    // Beyond this the learned cycle belongs to somewhere else.
+    const LEARN_RESET_KM = 200.0;
+
+    function binsFilled(mask as Number) as Number {
+        var n = 0;
+        for (var i = 0; i < 24; i++) {
+            if ((mask & (1 << i)) != 0) { n += 1; }
+        }
+        return n;
+    }
+
+    // True when the watch has moved far enough that the cycle it learned belongs
+    // to the terrain it left behind.
+    function profileMoved(latDeg as Float or Null, lonDeg as Float or Null,
+                          prevLat as Float or Null, prevLon as Float or Null) as Boolean {
+        if (latDeg == null || lonDeg == null || prevLat == null || prevLon == null) {
+            return false;
+        }
+        var dLat = ((latDeg as Float) - (prevLat as Float)) * 111.0;
+        var dLon = ((lonDeg as Float) - (prevLon as Float)) * 111.0
+                 * Math.cos((latDeg as Float) * Math.PI / 180.0);
+        return Math.sqrt(dLat * dLat + dLon * dLon) > LEARN_RESET_KM;
+    }
+
+    // Sample minus the mean of the window centred on it, minus the S2 the
+    // climatology already gets right. `values` runs newest-first over [lo..hi].
+    function residualPa(values as Array<Float>, lo as Number, hi as Number,
+                        centre as Number, solarHour as Float, s2Amp as Float) as Float {
+        var sum = 0.0;
+        for (var i = lo; i <= hi; i++) { sum += values[i]; }
+        var mean = sum / (hi - lo + 1).toFloat();
+        var s2 = s2Amp * Math.cos(2.0 * Math.PI * (solarHour - S2_PHASE_H) / 12.0);
+        return (values[centre] - mean - s2).toFloat();
+    }
+
+    // Average one residual into its solar-hour bin. Returns the updated coverage
+    // mask, or the mask unchanged when the residual is refused.
+    function foldResidual(bins as Array<Float>, mask as Number,
+                          solarHour as Float, residual as Float) as Number {
+        var r = residual;
+        if (r > LEARN_MAX_RESIDUAL_PA || r < 0.0 - LEARN_MAX_RESIDUAL_PA) { return mask; }
+        var h = solarHour;
+        while (h < 0.0) { h += 24.0; }
+        while (h >= 24.0) { h -= 24.0; }
+        var index = Math.round(h).toNumber() % 24;
+        var bit = 1 << index;
+        if ((mask & bit) == 0) {
+            bins[index] = r;
+        } else {
+            bins[index] = (bins[index] + LEARN_ALPHA * (r - bins[index])).toFloat();
+        }
+        return mask | bit;
+    }
+
+    // Learned diurnal amplitude (Pa) and phase (hours LST) from the filled bins,
+    // or null while the clock is too sparsely covered to fit two coefficients.
+    function learnedS1(bins as Array<Float>, mask as Number) as Array<Float> or Null {
+        if (binsFilled(mask) < LEARN_MIN_BINS) { return null; }
+        var cc = 0.0;
+        var ss = 0.0;
+        var cs = 0.0;
+        var rc = 0.0;
+        var rs = 0.0;
+        for (var i = 0; i < 24; i++) {
+            if ((mask & (1 << i)) == 0) { continue; }
+            var w = 2.0 * Math.PI * i.toFloat() / 24.0;
+            var c = Math.cos(w);
+            var s = Math.sin(w);
+            cc += c * c;
+            ss += s * s;
+            cs += c * s;
+            rc += bins[i] * c;
+            rs += bins[i] * s;
+        }
+        var det = cc * ss - cs * cs;
+        if (det > -0.000000001 && det < 0.000000001) { return null; }
+        var a = (rc * ss - rs * cs) / det;
+        var b = (rs * cc - rc * cs) / det;
+        var amp = Math.sqrt(a * a + b * b);
+        if (amp > LEARN_MAX_AMP_PA) { return null; }
+        var phase = Math.atan2(b, a) * 24.0 / (2.0 * Math.PI);
+        if (phase < 0.0) { phase += 24.0; }
+        return [amp.toFloat(), phase.toFloat()];
+    }
+
     // ── Classify MSL pressure into Low(0) / Normal(1) / High(2) ──────────
     //    Thresholds shift ±5 hPa seasonally following mid-latitude SLP variation.
     //    NH winter (Jan): mean SLP ~1020 → thresholds shift UP (+5)
@@ -242,7 +357,8 @@ module Sager {
         // Without a bearing there is no octant to look up, so the wind-averaged
         // row is used rather than pretending the wind is calm.
         var baseF;
-        if (windDeg == null) {
+        var haveWind = (windDeg != null);
+        if (!haveWind) {
             baseF = unknownBase[(trend >= 0 && trend <= 2) ? trend : 0].toFloat();
         } else {
             var octant = octantFromBearing(windDeg as Float);
@@ -282,8 +398,13 @@ module Sager {
 
         // ── Persistence modifier ───────────────────────────────────────────
         // Prolonged pressure stability at Normal/High → settled weather.
-        // Only applies when base forecast is already in the fair range (0-6).
-        if (trend == 0 && pLevel >= 1 && base <= 6 && steadyHours >= 6) {
+        // The gate keeps a genuinely poor outlook from being promoted. Without a
+        // bearing there is no poor outlook to protect against: the base is the
+        // octant average, the neutral no-information answer, and holding it out
+        // made this branch unreachable for the watch face, which then read
+        // "rather unsettled" through a fortnight of steady high pressure.
+        var settledGate = haveWind ? 6 : unknownBase[0];
+        if (trend == 0 && pLevel >= 1 && base <= settledGate && steadyHours >= 6) {
             if (steadyHours >= 24) {
                 base = 0;   // Settled fine
             } else if (steadyHours >= 12) {
