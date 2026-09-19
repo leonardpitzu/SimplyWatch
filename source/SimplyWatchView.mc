@@ -52,6 +52,11 @@ class SimplyWatchView extends WatchUi.WatchFace {
     var trend = 0;
     var currentPress as Number or Null = null;
 
+    // The measured daily cycle, cached by updateDailyProfile so the tide
+    // correction can read the bins instead of a sinusoid fitted through them.
+    hidden var mCycleBins as Array<Float> or Null = null;
+    hidden var mCycleMask as Number = 0;
+
     var mLastForecast = null;
 
     var height;
@@ -190,12 +195,20 @@ class SimplyWatchView extends WatchUi.WatchFace {
     }
 
     hidden function getSeaLevelPressure(stationPa as Float) as Number or Null {
+        var pa = getSeaLevelPressurePa(stationPa);
+        return (pa == null) ? null : Math.round((pa as Float) / 100.0).toNumber();
+    }
+
+    // Sea-level pressure in pascals, unrounded, or null when no altitude is known.
+    // The display rounds to whole hectopascals; the calibrated model cannot, because
+    // one hectopascal is a third of the anomaly scale it works in.
+    hidden function getSeaLevelPressurePa(stationPa as Float) as Float or Null {
         // Try OS-provided MSL pressure (requires prior GPS fix)
         var activityInfo = Activity.getActivityInfo();
         if (activityInfo != null && activityInfo has :meanSeaLevelPressure) {
             var mslPa = activityInfo.meanSeaLevelPressure;
             if (mslPa != null) {
-                return Math.round((mslPa as Float) / 100.0).toNumber();
+                return (mslPa as Float);
             }
         }
 
@@ -205,8 +218,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
             if (elevIter != null) {
                 var sample = elevIter.next();
                 if (sample != null && sample.data != null) {
-                    var stationHpa = stationPa / 100.0;
-                    return Math.round(stationHpa / mslFactor(sample.data as Float)).toNumber();
+                    return (stationPa / mslFactor(sample.data as Float)).toFloat();
                 }
             }
         }
@@ -215,6 +227,65 @@ class SimplyWatchView extends WatchUi.WatchFace {
         // station value would read as a deep low at any altitude (945 hPa at 600 m)
         // and apply a permanent two-code pessimism, so report that there is no level.
         return null;
+    }
+
+    // ── Daily mean pressure ring ───────────────────────────────────────────
+    // The calibrated forecast compares today against the last few weeks, which is
+    // far deeper than SensorHistory reaches. One float per closed day is enough,
+    // costs one write a day, and survives a reboot. Returns the closed days,
+    // oldest first, or null while nothing has closed yet.
+    hidden function updateDailyRing(sampleWhen as Number or Null,
+                                    mslPa as Float or Null) as Array<Float> or Null {
+        var stored = Storage.getValue("dmV");
+        var ring = (stored instanceof Array) ? stored as Array<Float> : new Array<Float>[0];
+        if (sampleWhen == null || mslPa == null) {
+            return (ring.size() > 0) ? ring : null;
+        }
+
+        var last = Storage.getValue("dmL");
+        var lastSec = (last != null) ? last.toNumber() : 0;
+        // SensorHistory's newest sample does not change between wakes. Folding it in
+        // twice would weight whichever hours the watch happened to be awake for, and
+        // the daily cycle is large enough that the bias would show.
+        if ((sampleWhen as Number) <= lastSec) {
+            return (ring.size() > 0) ? ring : null;
+        }
+
+        var day = ((sampleWhen as Number) + System.getClockTime().timeZoneOffset) / 86400;
+        var storedDay = Storage.getValue("dmD");
+        var curDay = (storedDay != null) ? storedDay.toNumber() : day;
+        var storedSum = Storage.getValue("dmS");
+        var sum = (storedSum != null) ? storedSum.toFloat() : 0.0;
+        var storedN = Storage.getValue("dmN");
+        var count = (storedN != null) ? storedN.toNumber() : 0;
+        var storedFirst = Storage.getValue("dmF");
+        var first = (storedFirst != null) ? storedFirst.toNumber() : (sampleWhen as Number);
+
+        if (curDay != day) {
+            // A day only counts once it has been watched for long enough that the
+            // daily cycle averages out of its mean rather than tilting it.
+            if (count >= Sager.CAL_MIN_SAMPLES_PER_DAY
+                && (lastSec - first) >= Sager.CAL_MIN_SPAN_SEC) {
+                ring.add((sum / count.toFloat()).toFloat());
+                if (ring.size() > Sager.CAL_SPREAD_DAYS) {
+                    ring = ring.slice(ring.size() - Sager.CAL_SPREAD_DAYS, null);
+                }
+                Storage.setValue("dmV", ring);
+            }
+            curDay = day;
+            sum = 0.0;
+            count = 0;
+            first = sampleWhen as Number;
+        }
+
+        sum += mslPa as Float;
+        count += 1;
+        Storage.setValue("dmD", curDay);
+        Storage.setValue("dmS", sum);
+        Storage.setValue("dmN", count);
+        Storage.setValue("dmF", first);
+        Storage.setValue("dmL", sampleWhen as Number);
+        return (ring.size() > 0) ? ring : null;
     }
 
     // Barometric reduction factor for a given altitude (m): P_msl = P_station / factor.
@@ -291,7 +362,17 @@ class SimplyWatchView extends WatchUi.WatchFace {
 
     // Atmospheric tide at a local solar hour (Pa). Shared with the glance so the two
     // apps cannot disagree on the correction; see the Sager module.
+    //
+    // The measured bins are used wherever they are covered enough to answer.
+    // Collapsing them onto a single sinusoid, which is what the profile returns,
+    // discards the shape that made measuring them worthwhile: at the reference
+    // station the fitted wave leaves 22.6 Pa RMS against 6.9 Pa for the bins.
     hidden function tidePa(solarHour as Float, s2Amp as Float, s1 as Array<Float>) as Float {
+        if (mCycleBins != null) {
+            var measured = Sager.binTidePa(solarHour, s2Amp,
+                                           mCycleBins as Array<Float>, mCycleMask);
+            if (measured != null) { return measured as Float; }
+        }
         return Sager.tidePa(solarHour, s2Amp, s1[0], s1[1]);
     }
 
@@ -398,6 +479,8 @@ class SimplyWatchView extends WatchUi.WatchFace {
         Storage.setValue("dpRt", rt);
         Storage.setValue("dpRv", rv);
         Storage.setValue("dpScan", scanAt);
+        mCycleBins = bins;
+        mCycleMask = mask as Number;
         return Sager.learnedS1(bins, mask as Number);
     }
 
@@ -1146,9 +1229,21 @@ class SimplyWatchView extends WatchUi.WatchFace {
             if (latestNonNull != null) {
                 currentPress = getSeaLevelPressure(latestNonNull as Float);
                 var monthF = today.month.toFloat() + (today.day.toFloat() - 1.0) / 30.4;
-                // The watch face has no compass, so the wind is genuinely unknown
-                // rather than calm.
-                mLastForecast = Sager.WeatherForecast(currentPress, monthF, null, trend, mNorthSouth, steadyHours);
+
+                // The calibrated model measures anomalies of a few hundred pascals,
+                // so it needs the unrounded reduction, and it needs a real one:
+                // feeding it station pressure would turn a walk uphill into a
+                // collapsing barometer.
+                var mslNowPa = getSeaLevelPressurePa(latestNonNull as Float);
+                var ring = updateDailyRing(newestWhenSec, mslNowPa);
+
+                // The calibrated model once the ring can answer, the wind-aware table
+                // until then. The watch face has no compass, so the wind is genuinely
+                // unknown rather than calm.
+                var calibrated = Sager.CalibratedForecast(mslNowPa, ring);
+                mLastForecast = (calibrated != null)
+                    ? calibrated
+                    : Sager.WeatherForecast(currentPress, monthF, null, trend, mNorthSouth, steadyHours);
                 forecastChanged = true;
             }
         }

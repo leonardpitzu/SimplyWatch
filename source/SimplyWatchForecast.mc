@@ -281,6 +281,12 @@ module Sager {
 
     // Learned diurnal amplitude (Pa) and phase (hours LST) from the filled bins,
     // or null while the clock is too sparsely covered to fit two coefficients.
+    //
+    // Kept for the settled-weather gate and for diagnostics. The tide correction
+    // itself no longer goes through here: collapsing 24 measured bins onto one
+    // sinusoid throws away the shape that makes the measurement worth taking, and
+    // at the reference station that costs 22.6 Pa RMS against 6.9 Pa for reading
+    // the bins directly. Use `binTidePa` on the correction path.
     function learnedS1(bins as Array<Float>, mask as Number) as Array<Float> or Null {
         if (binsFilled(mask) < LEARN_MIN_BINS) { return null; }
         var cc = 0.0;
@@ -308,6 +314,147 @@ module Sager {
         var phase = Math.atan2(b, a) * 24.0 / (2.0 * Math.PI);
         if (phase < 0.0) { phase += 24.0; }
         return [amp.toFloat(), phase.toFloat()];
+    }
+
+    // The measured cycle itself, read straight out of the bins. `bins` holds the
+    // residual after S2 was already removed, so S2 is added back here to give the
+    // same quantity `tidePa` returns. Linear interpolation between the two nearest
+    // filled bins, wrapping at midnight; null while coverage is too thin.
+    function binTidePa(solarHour as Float, s2Amp as Float,
+                       bins as Array<Float>, mask as Number) as Float or Null {
+        if (binsFilled(mask) < LEARN_MIN_BINS) { return null; }
+        var h = solarHour;
+        while (h < 0.0) { h += 24.0; }
+        while (h >= 24.0) { h -= 24.0; }
+        var here = h.toNumber() % 24;
+
+        var back = 0;
+        while (back < 24 && (mask & (1 << ((here - back + 24) % 24))) == 0) { back += 1; }
+        if (back >= 24) { return null; }
+        var forward = 1;
+        while (forward <= 24 && (mask & (1 << ((here + forward) % 24))) == 0) { forward += 1; }
+        if (forward > 24) { return null; }
+
+        var lo = bins[(here - back + 24) % 24];
+        var hi = bins[(here + forward) % 24];
+        var span = (back + forward).toFloat();
+        var frac = (h - here.toFloat() + back.toFloat()) / span;
+        var s2 = s2Amp * Math.cos(2.0 * Math.PI * (h - S2_PHASE_H) / 12.0);
+        return (lo + frac * (hi - lo) + s2).toFloat();
+    }
+
+    // ── Calibrated rain probability ─────────────────────────────────────────
+    //   Fitted offline against 73 days of a real station's rain gauge, then baked.
+    //   One feature: sea-level pressure measured against the site's own recent
+    //   history, in units of the site's own recent spread.
+    //
+    //       z = (msl_now - mean of the last 7 daily means) / spread of the last 30
+    //       p = 1 / (1 + exp(-(a + b*z)))
+    //
+    //   The label shown is the forecast code whose tabulated probability is nearest
+    //   p, so the words and the number are the same quantity and cannot contradict
+    //   each other. That is what stops "Very unsettled" appearing beside 12%.
+    //
+    //   What this does and does not claim. It ORDERS hours well: on the reference
+    //   archive it separates wet from dry with an area under the curve of 0.72,
+    //   against 0.52 for the table it replaces, which is a coin flip. It does NOT
+    //   beat a constant forecast of the local average, because 73 summer days
+    //   cannot establish what that average is across a year. So the range below is
+    //   deliberately narrow, and codes above the twenties are unreachable: a single
+    //   barometer does not know enough to say "Stormy".
+    //
+    //   Dividing by the spread earns nothing measurable on the reference archive,
+    //   where the spread barely moves. It is here so a slope fitted in summer still
+    //   means something in winter, when the same anomaly in pascals is ordinary.
+    const CAL_HORIZON_H = 24;
+    const CAL_INTERCEPT = -1.36169;
+    const CAL_SLOPE_Z = -0.51457;
+    const CAL_E = 2.718281828459045;
+    // Bounds the amplification when a month is unusually quiet, so a trivial
+    // wiggle in settled weather cannot be divided up into a dramatic anomaly.
+    const CAL_SD_FLOOR_PA = 150.0;
+    // Past this the barometer is doing something the record never showed, and
+    // extrapolating the fit is guesswork.
+    const CAL_Z_LIMIT = 4.0;
+    const CAL_SPREAD_DAYS = 30;
+    const CAL_ANOMALY_DAYS = 7;
+    // Fewer closed days than this and the spread is noise, not a scale.
+    const CAL_MIN_DAYS = 14;
+    // What a day must show before its mean is allowed into the ring. The watch
+    // samples every few hours, not hourly, so a count alone is the wrong test:
+    // what matters is that the samples straddle enough of the day for the ~180 Pa
+    // daily cycle to average out instead of tilting the mean toward whenever the
+    // watch happened to be awake.
+    const CAL_MIN_SAMPLES_PER_DAY = 4;
+    const CAL_MIN_SPAN_SEC = 43200;
+
+    // Spread of the trailing daily means, floored. Null while the ring is short.
+    function dailySpreadPa(days as Array<Float>) as Float or Null {
+        var n = days.size();
+        if (n < CAL_MIN_DAYS) { return null; }
+        var from = (n > CAL_SPREAD_DAYS) ? n - CAL_SPREAD_DAYS : 0;
+        var count = (n - from).toFloat();
+        var sum = 0.0;
+        for (var i = from; i < n; i++) { sum += days[i]; }
+        var mean = sum / count;
+        var acc = 0.0;
+        for (var j = from; j < n; j++) {
+            var d = days[j] - mean;
+            acc += d * d;
+        }
+        var sd = Math.sqrt(acc / (count - 1.0));
+        return (sd > CAL_SD_FLOOR_PA) ? sd.toFloat() : CAL_SD_FLOOR_PA;
+    }
+
+    // `days` holds the mean sea-level pressure of each CLOSED day, oldest first.
+    // Today is excluded on purpose: subtracting today's own weather from itself
+    // would flatten the very anomaly being measured.
+    function standardisedAnomaly(mslNowPa as Float, days as Array<Float>) as Float or Null {
+        var sd = dailySpreadPa(days);
+        if (sd == null) { return null; }
+        var n = days.size();
+        var from = (n > CAL_ANOMALY_DAYS) ? n - CAL_ANOMALY_DAYS : 0;
+        var sum = 0.0;
+        for (var i = from; i < n; i++) { sum += days[i]; }
+        var z = (mslNowPa - sum / (n - from).toFloat()) / (sd as Float);
+        if (z > CAL_Z_LIMIT) { z = CAL_Z_LIMIT; }
+        if (z < 0.0 - CAL_Z_LIMIT) { z = 0.0 - CAL_Z_LIMIT; }
+        return z.toFloat();
+    }
+
+    function calibratedProbability(z as Float) as Float {
+        var e = CAL_INTERCEPT + CAL_SLOPE_Z * z;
+        return (1.0 / (1.0 + Math.pow(CAL_E, -e))).toFloat();
+    }
+
+    // Forecast code whose tabulated probability is nearest `p`. Ties go to the
+    // lower code: of two equally distant descriptions, the calmer one is the
+    // safer thing to put in front of someone.
+    function codeForProbability(p as Float) as Number {
+        var best = 0;
+        var bestGap = 2.0;
+        for (var c = 0; c < precipProb.size(); c++) {
+            var gap = precipProb[c].toFloat() / 100.0 - p;
+            if (gap < 0.0) { gap = 0.0 - gap; }
+            if (gap < bestGap - 0.0000001) {
+                bestGap = gap;
+                best = c;
+            }
+        }
+        return best;
+    }
+
+    // Returns [forecastText, forecastNumber, precipProbability], or null while the
+    // daily ring is still filling, in which case the caller falls back to the
+    // wind-aware table below.
+    function CalibratedForecast(mslNowPa as Float or Null,
+                                days as Array<Float> or Null) as Array or Null {
+        if (mslNowPa == null || days == null) { return null; }
+        var z = standardisedAnomaly(mslNowPa as Float, days as Array<Float>);
+        if (z == null) { return null; }
+        var p = calibratedProbability(z as Float);
+        var code = codeForProbability(p);
+        return [forecast(code), code, Math.round(p * 100.0).toNumber()];
     }
 
     // ── Classify MSL pressure into Low(0) / Normal(1) / High(2) ──────────

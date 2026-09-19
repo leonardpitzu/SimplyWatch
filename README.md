@@ -42,21 +42,25 @@ A glitched elevation sample cannot poison the series: the sea-level reduction cl
 
 Earlier revisions of this file quoted accuracy figures of 60-80%. Those were never measured. They have been replaced with a verification against a rain gauge.
 
-Scored over 40 days against a co-located weather station - 926 hourly forecasts, 13.2% of 6-hour windows wet:
+The engine was replaced in September 2026. The Sager lookup table it used before was scored over 73 days against a co-located weather station and found to separate wet hours from dry ones no better than a coin flip: **area under the ROC curve 0.52**, in every cross-validation fold. Its stated probabilities were not probabilities either - "75%" verified at 13%.
 
-| Metric | Value | Reading |
-|---|---|---|
-| Brier score | 0.159 | climatology scores 0.114 |
-| Brier skill score | **-0.39** | negative: worse than always forecasting the average |
-| Reliability | 75% stated -> 25% observed | the stated probability is not a probability |
-| False-alarm ratio | 0.76 | three in four warnings did not verify |
-| Resolution | 0.002 | almost no information about *when* rain arrives |
+What ships now is a single calibrated feature: sea-level pressure measured against the site's own recent history, in units of the site's own recent spread. Scored over 73 days, 1400 day-ahead forecasts, 21.4% of 24-hour windows wet:
 
-The barometric tendency carries essentially no 6-hour rain signal at the test site (rank correlation +0.00 against observed rain) but a clear 24-hour one (-0.68), so the forecast horizon is itself under review.
+| Metric | New engine | Old table | Reading |
+|---|---|---|---|
+| Brier score | **0.159** | 0.226 | climatology scores 0.171 |
+| Discrimination (fold AUC) | **0.72** | 0.52 | 0.5 is a coin flip |
+| Reliability | 24% stated -> 31% observed | 75% -> 13% | the number now means something |
+| Resolution | 0.012 | 0.001 | information about *when* |
+| False-alarm ratio | 0.63 | 0.88 | still high; see below |
 
-A calibrated replacement is in progress. It is blocked on data rather than on code: 40 days spans a single regime change, so every cross-validation fold trains on a climate the held-out fold does not share.
+**What it does and does not do.** It orders hours well - given two hours, it reliably ranks the wetter one higher, and it does so in every fold of the record. It does **not** beat a constant forecast of the local average: out of sample its Brier skill score is +0.02, and a control feature consisting of nothing but "days since the record started" scores +0.03 on the same data. Seventy-three summer days cannot establish what the local average is across a year, so the absolute level is not yet earned. That is why the probabilities are narrow (5% to 55%) and why the descriptions above "Rain at times" are unreachable: a single barometer does not know enough to say *Stormy*.
 
-> **Read the forecast as a barometer readout with a label attached, not as a probability of rain.**
+The horizon moved from 6 hours to 24 for the same reason - the barometric signal at this site is a day-ahead one (rank correlation -0.68 at 24 h against +0.00 at 6 h).
+
+The forecaster is shared byte-for-byte with the [simplyweather](https://github.com/leonardpitzu/simplyweather) glance, which verifies that on every run. The old table is still used for the first fortnight, while the daily ring fills.
+
+> **Read the forecast as a well-ordered barometer readout, not as a calibrated probability of rain.**
 
 ## Features
 
