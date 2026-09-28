@@ -14,11 +14,10 @@ import Toybox.Application.Properties;
 import Sager;
 
 const cTime = 0.0 - ((Gregorian.SECONDS_PER_HOUR * 6) + (Gregorian.SECONDS_PER_MINUTE * 10));
-// Sager's own boundary is 1.0 hPa/6h (0.17 hPa/h), but that assumes the daily
-// cycle has been removed exactly. What the correction leaves behind at a site
-// whose diurnal signal exceeds the climatology is of the same order as the
-// boundary itself, so the boundary is widened to cover it.
-const cSteady = 22.0; // Pa/h dead zone
+// Sager/WMO "slowly" boundary: 1.0 hPa/6h. It was widened to 22 while the tide
+// came from a latitude table, whose leftover daily swing is of the same order;
+// the learned cycle leaves about a tenth of that, so the textbook value stands.
+const cSteady = 17.0; // Pa/h dead zone
 const MINS_5 = (Gregorian.SECONDS_PER_MINUTE * 5);
 // Elevation on this watch is barometric whenever the altimeter is not GPS-calibrated,
 // so feeding it back into the MSL reduction can cancel a real pressure fall. Gate on
@@ -56,6 +55,11 @@ class SimplyWatchView extends WatchUi.WatchFace {
     // correction can read the bins instead of a sinusoid fitted through them.
     hidden var mCycleBins as Array<Float> or Null = null;
     hidden var mCycleMask as Number = 0;
+    hidden var mScanAt as Number = 0;
+    // Closed-day tide-free sea-level means and their local day numbers, oldest
+    // first, for the calibrated forecast.
+    hidden var mDayMeans as Array<Float> = [] as Array<Float>;
+    hidden var mDayNumbers as Array<Number> = [] as Array<Number>;
 
     var mLastForecast = null;
 
@@ -194,100 +198,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return (hours > 24) ? 24 : hours;
     }
 
-    hidden function getSeaLevelPressure(stationPa as Float) as Number or Null {
-        var pa = getSeaLevelPressurePa(stationPa);
-        return (pa == null) ? null : Math.round((pa as Float) / 100.0).toNumber();
-    }
-
-    // Sea-level pressure in pascals, unrounded, or null when no altitude is known.
-    // The display rounds to whole hectopascals; the calibrated model cannot, because
-    // one hectopascal is a third of the anomaly scale it works in.
-    hidden function getSeaLevelPressurePa(stationPa as Float) as Float or Null {
-        // Try OS-provided MSL pressure (requires prior GPS fix)
-        var activityInfo = Activity.getActivityInfo();
-        if (activityInfo != null && activityInfo has :meanSeaLevelPressure) {
-            var mslPa = activityInfo.meanSeaLevelPressure;
-            if (mslPa != null) {
-                return (mslPa as Float);
-            }
-        }
-
-        // Fallback: elevation history + barometric formula
-        if ((Toybox has :SensorHistory) && (Toybox.SensorHistory has :getElevationHistory)) {
-            var elevIter = SensorHistory.getElevationHistory({:period => 1, :order => SensorHistory.ORDER_NEWEST_FIRST});
-            if (elevIter != null) {
-                var sample = elevIter.next();
-                if (sample != null && sample.data != null) {
-                    return (stationPa / mslFactor(sample.data as Float)).toFloat();
-                }
-            }
-        }
-
-        // No altitude is known, so the reading cannot be reduced. Returning the raw
-        // station value would read as a deep low at any altitude (945 hPa at 600 m)
-        // and apply a permanent two-code pessimism, so report that there is no level.
-        return null;
-    }
-
-    // ── Daily mean pressure ring ───────────────────────────────────────────
-    // The calibrated forecast compares today against the last few weeks, which is
-    // far deeper than SensorHistory reaches. One float per closed day is enough,
-    // costs one write a day, and survives a reboot. Returns the closed days,
-    // oldest first, or null while nothing has closed yet.
-    hidden function updateDailyRing(sampleWhen as Number or Null,
-                                    mslPa as Float or Null) as Array<Float> or Null {
-        var stored = Storage.getValue("dmV");
-        var ring = (stored instanceof Array) ? stored as Array<Float> : new Array<Float>[0];
-        if (sampleWhen == null || mslPa == null) {
-            return (ring.size() > 0) ? ring : null;
-        }
-
-        var last = Storage.getValue("dmL");
-        var lastSec = (last != null) ? last.toNumber() : 0;
-        // SensorHistory's newest sample does not change between wakes. Folding it in
-        // twice would weight whichever hours the watch happened to be awake for, and
-        // the daily cycle is large enough that the bias would show.
-        if ((sampleWhen as Number) <= lastSec) {
-            return (ring.size() > 0) ? ring : null;
-        }
-
-        var day = ((sampleWhen as Number) + System.getClockTime().timeZoneOffset) / 86400;
-        var storedDay = Storage.getValue("dmD");
-        var curDay = (storedDay != null) ? storedDay.toNumber() : day;
-        var storedSum = Storage.getValue("dmS");
-        var sum = (storedSum != null) ? storedSum.toFloat() : 0.0;
-        var storedN = Storage.getValue("dmN");
-        var count = (storedN != null) ? storedN.toNumber() : 0;
-        var storedFirst = Storage.getValue("dmF");
-        var first = (storedFirst != null) ? storedFirst.toNumber() : (sampleWhen as Number);
-
-        if (curDay != day) {
-            // A day only counts once it has been watched for long enough that the
-            // daily cycle averages out of its mean rather than tilting it.
-            if (count >= Sager.CAL_MIN_SAMPLES_PER_DAY
-                && (lastSec - first) >= Sager.CAL_MIN_SPAN_SEC) {
-                ring.add((sum / count.toFloat()).toFloat());
-                if (ring.size() > Sager.CAL_SPREAD_DAYS) {
-                    ring = ring.slice(ring.size() - Sager.CAL_SPREAD_DAYS, null);
-                }
-                Storage.setValue("dmV", ring);
-            }
-            curDay = day;
-            sum = 0.0;
-            count = 0;
-            first = sampleWhen as Number;
-        }
-
-        sum += mslPa as Float;
-        count += 1;
-        Storage.setValue("dmD", curDay);
-        Storage.setValue("dmS", sum);
-        Storage.setValue("dmN", count);
-        Storage.setValue("dmF", first);
-        Storage.setValue("dmL", sampleWhen as Number);
-        return (ring.size() > 0) ? ring : null;
-    }
-
     // Barometric reduction factor for a given altitude (m): P_msl = P_station / factor.
     // Altitude is clamped to a physically sane band so a glitched elevation sample
     // (sensor encoding errors surface as wild values) can't drive the base term to
@@ -404,165 +314,259 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return stationPa / mslFactor(altAtAnchor(ez, ea, idx, whenSec));
     }
 
-    // ── Learned daily cycle ────────────────────────────────────────────────
-    // The hourly path costs no sensor access at all: the face already reads one
-    // pressure sample an hour, so the 24 h mean and the sample 12 h back both come
-    // out of a stored 25-slot ring. Iterating the sensor log is the expensive part,
-    // so the full scan below runs only while the profile has too few bins to answer.
-    hidden function updateDailyProfile(nowSec as Number, solarHourNow as Float,
-                                       newestWhen as Number or Null, newestMsl as Float or Null,
-                                       s2Amp as Float,
+    // ── Learned daily cycle and daily means ────────────────────────────────
+    // Both come out of the watch's own pressure record, never out of the moments
+    // this app happened to run, so they keep learning through an activity, a night
+    // with the screen off, or a week of nobody looking. Each pass reads back only
+    // as far as what is new: the hours whose ±12 h window has closed since the
+    // last pass, and the samples not yet added to their day. Returns the daily
+    // cycle as a sinusoid, the learned one or the latitude table's.
+    hidden function updateDailyProfile(nowSec as Number, solarHourNow as Float, s2Amp as Float,
                                        elevWhen as Array<Number> or Null,
-                                       elevAlt as Array<Float> or Null) as Array<Float> or Null {
-        var stored = Storage.getValue("dpB");
-        var bins;
-        var mask = Storage.getValue("dpM");
-        if (stored instanceof Array && (stored as Array).size() == 24 && mask instanceof Number) {
-            bins = stored as Array<Float>;
-        } else {
-            bins = new Array<Float>[24];
-            for (var i = 0; i < 24; i++) { bins[i] = 0.0; }
-            mask = 0;
-        }
-
-        var ringT = Storage.getValue("dpRt");
-        var ringV = Storage.getValue("dpRv");
-        if (!(ringT instanceof Array) || !(ringV instanceof Array)
-            || (ringT as Array).size() != (ringV as Array).size()) {
-            ringT = new Array<Number>[0];
-            ringV = new Array<Float>[0];
-        }
-        var scanAt = Storage.getValue("dpScan");
-        if (!(scanAt instanceof Number)) { scanAt = 0; }
-
-        // The cycle belongs to the terrain, so it does not travel with the watch.
+                                       elevAlt as Array<Float> or Null) as Array<Float> {
+        if (mCycleBins == null) { loadProfile(); }
         var lat = getLatitude();
-        var lon = getLongitude();
-        var prevLat = Storage.getValue("dpLat");
-        var prevLon = Storage.getValue("dpLon");
-        if (Sager.profileMoved(lat, lon, prevLat, prevLon)) {
-            for (var i = 0; i < 24; i++) { bins[i] = 0.0; }
-            mask = 0;
-            ringT = new Array<Number>[0];
-            ringV = new Array<Float>[0];
-            scanAt = 0;
-        }
-        // These record where the profile was learned, so they are written only when
-        // it starts over. That is also what keeps flash writes off the hourly path.
-        if (mask == 0 && lat != null) {
-            Storage.setValue("dpLat", lat);
-            Storage.setValue("dpLon", lon);
-        }
+        if ((nowSec - mScanAt) < Sager.LEARN_SCAN_SEC) { return cycleS1(lat); }
 
-        var rt = ringT as Array<Number>;
-        var rv = ringV as Array<Float>;
-        if (newestWhen != null && newestMsl != null
-            && (rt.size() == 0 || (newestWhen as Number) > rt[rt.size() - 1])) {
-            rt.add(newestWhen as Number);
-            rv.add(newestMsl as Float);
-            if (rt.size() > Sager.LEARN_RING_SLOTS) {
-                rt = rt.slice(rt.size() - Sager.LEARN_RING_SLOTS, null);
-                rv = rv.slice(rv.size() - Sager.LEARN_RING_SLOTS, null);
+        var lastCentre = Storage.getValue("dpC");
+        if (!(lastCentre instanceof Number)) { lastCentre = 0; }
+        // A move keeps the cycle but skips the windows that straddle the journey,
+        // since their mean would average two places.
+        if (lat != null) {
+            var prevLat = Storage.getValue("dpLat");
+            if (prevLat == null || Sager.profileMoved(lat, getLongitude(), prevLat, Storage.getValue("dpLon"))) {
+                if (prevLat != null) {
+                    var resume = nowSec + Sager.LEARN_LAG_SEC - 3600;
+                    if (resume > (lastCentre as Number)) { lastCentre = resume; }
+                }
+                Storage.setValue("dpLat", lat);
+                Storage.setValue("dpLon", getLongitude());
             }
         }
 
-        var filled = Sager.binsFilled(mask as Number);
-        if (filled < Sager.LEARN_MIN_BINS && (nowSec - (scanAt as Number)) >= Sager.LEARN_RESCAN_SEC) {
-            scanAt = nowSec;
-            mask = harvestDailyProfile(bins, mask as Number, nowSec, solarHourNow, s2Amp, elevWhen, elevAlt);
+        // Back to the oldest thing still to learn: the first window not yet taken,
+        // or the first sample not yet in its day.
+        var fromSec = (lastCentre as Number) + 3600 - Sager.LEARN_LAG_SEC;
+        var dayLast = Storage.getValue("dmL");
+        if (!(dayLast instanceof Number)) {
+            fromSec = 0;
+        } else if ((dayLast as Number) < fromSec) {
+            fromSec = dayLast as Number;
+        }
+        var record = readRecord(fromSec, nowSec, elevWhen, elevAlt);
+        if (record != null) {
+            var when = (record as Array)[0] as Array<Number>;
+            var msl = (record as Array)[1] as Array<Float>;
+            lastCentre = foldCycle(when, msl, lastCentre as Number, nowSec, solarHourNow, s2Amp);
+            foldDailyMeans(when, msl, nowSec, solarHourNow, s2Amp, cycleS1(lat));
+        }
+        mScanAt = nowSec;
+        Storage.setValue("dpB", mCycleBins);
+        Storage.setValue("dpM", mCycleMask);
+        Storage.setValue("dpC", lastCentre);
+        Storage.setValue("dpScan", nowSec);
+        return cycleS1(lat);
+    }
+
+    // Once per view: the learner's state lives in members between passes.
+    hidden function loadProfile() as Void {
+        if (!(Storage.getValue("dpC") instanceof Number)) {
+            // First run of this learner: what the old one stored was sampled when
+            // the app ran, which is exactly what this one no longer trusts.
+            var stale = ["dpRt", "dpRv", "dpScan", "dmV", "dmD", "dmS", "dmN", "dmF", "dmL"];
+            for (var k = 0; k < stale.size(); k++) { Storage.deleteValue(stale[k]); }
+        }
+        var stored = Storage.getValue("dpB");
+        var mask = Storage.getValue("dpM");
+        if (stored instanceof Array && (stored as Array).size() == 24 && mask instanceof Number) {
+            mCycleBins = stored as Array<Float>;
+            mCycleMask = mask as Number;
         } else {
-            mask = observeDailyProfile(bins, mask as Number, rt, rv, nowSec, solarHourNow, s2Amp);
+            var bins = new Array<Float>[24];
+            for (var i = 0; i < 24; i++) { bins[i] = 0.0; }
+            mCycleBins = bins;
+            mCycleMask = 0;
         }
-
-        Storage.setValue("dpB", bins);
-        Storage.setValue("dpM", mask);
-        Storage.setValue("dpRt", rt);
-        Storage.setValue("dpRv", rv);
-        Storage.setValue("dpScan", scanAt);
-        mCycleBins = bins;
-        mCycleMask = mask as Number;
-        return Sager.learnedS1(bins, mask as Number);
+        var means = Storage.getValue("dmV");
+        var days = Storage.getValue("dmK");
+        if (means instanceof Array && days instanceof Array && (means as Array).size() == (days as Array).size()) {
+            mDayMeans = means as Array<Float>;
+            mDayNumbers = days as Array<Number>;
+        }
+        var scanAt = Storage.getValue("dpScan");
+        mScanAt = (scanAt instanceof Number) ? scanAt as Number : 0;
     }
 
-    // Fold the ring's middle sample in. Reads nothing.
-    hidden function observeDailyProfile(bins as Array<Float>, mask as Number,
-                                        rt as Array<Number>, rv as Array<Float>,
-                                        nowSec as Number, solarHourNow as Float,
-                                        s2Amp as Float) as Number {
-        var n = rt.size();
-        if (n < Sager.LEARN_RING_SLOTS) { return mask; }
-        if ((rt[n - 1] - rt[0]) < (Sager.LEARN_WINDOW_SEC * Sager.LEARN_MIN_COVERAGE).toNumber()) {
-            return mask;
-        }
-        // A hole in the record tilts the mean towards whichever half survived.
-        for (var i = 1; i < n; i++) {
-            if ((rt[i] - rt[i - 1]) > Sager.LEARN_RING_MAX_GAP_SEC) { return mask; }
-        }
-        var centre = n / 2;
-        var solarHour = solarHourNow - (nowSec - rt[centre]).toFloat() / 3600.0;
-        return Sager.foldResidual(bins, mask, solarHour,
-                                  Sager.residualPa(rv, 0, n - 1, centre, solarHour, s2Amp));
+    hidden function cycleS1(lat as Float or Null) as Array<Float> {
+        var s1 = Sager.learnedS1(mCycleBins as Array<Float>, mCycleMask);
+        return (s1 != null) ? s1 as Array<Float> : Sager.s1Tide(lat);
     }
 
-    // One pass over the record, taking every hour it can centre a 24 h window on.
-    // Only worth its battery while the profile cannot answer at all.
-    hidden function harvestDailyProfile(bins as Array<Float>, mask as Number,
-                                        nowSec as Number, solarHourNow as Float,
-                                        s2Amp as Float,
-                                        elevWhen as Array<Number> or Null,
-                                        elevAlt as Array<Float> or Null) as Number {
-        var it = getPressureIterator();
-        if (it == null) { return mask; }
+    // The pressure record from `fromSec` on (all of it for 0), reduced to sea
+    // level and thinned to one sample per LEARN_DECIMATE_SEC, oldest first, as
+    // [when[], msl[]]. Null when the device keeps no record or it is empty.
+    hidden function readRecord(fromSec as Number, nowSec as Number,
+                               elevWhen as Array<Number> or Null,
+                               elevAlt as Array<Float> or Null) as Array or Null {
+        if (!((Toybox has :SensorHistory) && (Toybox.SensorHistory has :getPressureHistory))) {
+            return null;
+        }
+        var it = (fromSec > 0)
+            ? SensorHistory.getPressureHistory({
+                  :period => new Time.Duration(nowSec - fromSec + Sager.LEARN_DECIMATE_SEC),
+                  :order => SensorHistory.ORDER_NEWEST_FIRST
+              })
+            : SensorHistory.getPressureHistory({:order => SensorHistory.ORDER_NEWEST_FIRST});
 
         var whenArr = new Array<Number>[0];
         var mslArr = new Array<Float>[0];
         var acceptBefore = null;
         var guard = 0;
+        // Both series run newest-first, so one forward index pairs them.
+        var ei = 0;
         var s = it.next();
         while (s != null && guard < 4000 && whenArr.size() < 500) {
             guard += 1;
             var d = s.data;
             if (d != null) {
                 var swhen = s.when.value();
+                if (swhen < fromSec) { break; }
                 if (acceptBefore == null || swhen <= (acceptBefore as Number)) {
                     acceptBefore = swhen - Sager.LEARN_DECIMATE_SEC;
+                    var pa = d as Float;
+                    if (elevWhen != null && elevAlt != null && (elevWhen as Array<Number>).size() > 0) {
+                        var ez = elevWhen as Array<Number>;
+                        while (ei < ez.size() - 1 && ez[ei] > swhen) { ei += 1; }
+                        pa = pa / mslFactor(altAtAnchor(ez, elevAlt as Array<Float>, ei, swhen));
+                    }
                     whenArr.add(swhen);
-                    mslArr.add(mslReduce(d as Float, swhen, elevWhen, elevAlt));
+                    mslArr.add(pa);
                 }
             }
             s = it.next();
         }
 
         var n = whenArr.size();
-        // Fold oldest first: the running average weights whatever arrives last, so
-        // walking the record backwards would leave the profile trusting the oldest
-        // day most.
+        if (n == 0) { return null; }
+        // Oldest first: the running averages weight whatever arrives last, so
+        // walking the record backwards would leave them trusting the oldest day most.
         var ascWhen = new Array<Number>[n];
         var ascMsl = new Array<Float>[n];
         for (var i = 0; i < n; i++) {
             ascWhen[i] = whenArr[n - 1 - i];
             ascMsl[i] = mslArr[n - 1 - i];
         }
+        return [ascWhen, ascMsl];
+    }
 
+    // Fold in every hour whose ±12 h window has closed since `lastCentre`, at most
+    // one an hour, and return the newest centre taken. A window with a hole in it
+    // is skipped, and so is one the record does not yet cover to both ends; that
+    // one is taken on a later pass.
+    hidden function foldCycle(w as Array<Number>, v as Array<Float>, lastCentre as Number,
+                              nowSec as Number, solarHourNow as Float, s2Amp as Float) as Number {
+        var n = w.size();
+        // holes[i]: gaps wider than LEARN_MAX_GAP_SEC among the first i+1 samples.
+        var holes = new Array<Number>[n];
+        holes[0] = 0;
+        for (var i = 1; i < n; i++) {
+            holes[i] = holes[i - 1] + (((w[i] - w[i - 1]) > Sager.LEARN_MAX_GAP_SEC) ? 1 : 0);
+        }
         var minSpan = (Sager.LEARN_WINDOW_SEC * Sager.LEARN_MIN_COVERAGE).toNumber();
-        var newMask = mask;
+        var taken = lastCentre;
         var lo = 0;
         var hi = -1;
-        var lastTaken = 0;
+        // The window's sum slides with it, taken about the first sample so single
+        // precision keeps the pascals: re-adding each window from scratch is what a
+        // first pass over days of record cannot afford inside the watchdog.
+        var ref = v[0];
+        var sum = 0.0;
         // Time ascends with the index, so both bounds only ever move forward.
         for (var c = 0; c < n; c++) {
-            var tc = ascWhen[c];
-            while (hi + 1 < n && ascWhen[hi + 1] <= tc + Sager.LEARN_LAG_SEC) { hi += 1; }
-            while (lo <= hi && ascWhen[lo] < tc - Sager.LEARN_LAG_SEC) { lo += 1; }
-            if (lo > c || hi < c) { continue; }
-            if ((ascWhen[hi] - ascWhen[lo]) < minSpan) { continue; }
-            if (lastTaken != 0 && (tc - lastTaken) < 3600) { continue; }
+            var tc = w[c];
+            while (hi + 1 < n && w[hi + 1] <= tc + Sager.LEARN_LAG_SEC) {
+                hi += 1;
+                sum += v[hi] - ref;
+            }
+            while (lo <= hi && w[lo] < tc - Sager.LEARN_LAG_SEC) {
+                sum -= v[lo] - ref;
+                lo += 1;
+            }
+            if ((tc - taken) < 3600) { continue; }
+            if ((w[hi] - w[lo]) < minSpan || holes[hi] != holes[lo]) { continue; }
             var solarHour = solarHourNow - (nowSec - tc).toFloat() / 3600.0;
-            newMask = Sager.foldResidual(bins, newMask, solarHour,
-                                         Sager.residualPa(ascMsl, lo, hi, c, solarHour, s2Amp));
-            lastTaken = tc;
+            var mean = ref + sum / (hi - lo + 1).toFloat();
+            mCycleMask = Sager.foldResidual(mCycleBins as Array<Float>, mCycleMask, solarHour,
+                                            Sager.residualPa(v[c], mean, solarHour, s2Amp));
+            taken = tc;
         }
-        return newMask;
+        return taken;
+    }
+
+    // ── Daily mean pressure ring ───────────────────────────────────────────
+    // The calibrated forecast compares today against the last few weeks, which is
+    // far deeper than the sensor record reaches, so each closed day is kept as one
+    // float and its day number. Samples go in with the daily cycle removed, so a
+    // day the record covers for only twelve hours is not tilted toward whichever
+    // twelve they were. A day closes when a sample from a later day arrives.
+    hidden function foldDailyMeans(w as Array<Number>, v as Array<Float>, nowSec as Number,
+                                   solarHourNow as Float, s2Amp as Float, s1 as Array<Float>) as Void {
+        var last = Storage.getValue("dmL");
+        var lastSec = (last instanceof Number) ? last as Number : 0;
+        var curDay = Storage.getValue("dmD");
+        var storedSum = Storage.getValue("dmS");
+        var storedCount = Storage.getValue("dmN");
+        var storedFirst = Storage.getValue("dmF");
+        var sum = (storedSum instanceof Float) ? storedSum as Float : 0.0;
+        var count = (storedCount instanceof Number) ? storedCount as Number : 0;
+        var first = (storedFirst instanceof Number) ? storedFirst as Number : 0;
+        var tz = System.getClockTime().timeZoneOffset;
+        var closed = false;
+        // The tide at each whole solar hour, once per pass: the bins are linear
+        // between hours anyway, and evaluating them per sample is what a first pass
+        // over days of record cannot afford inside the watchdog.
+        var tide = new Array<Float>[25];
+        for (var h = 0; h < 25; h++) { tide[h] = tidePa(h.toFloat(), s2Amp, s1); }
+
+        for (var i = 0; i < w.size(); i++) {
+            if (w[i] <= lastSec) { continue; }
+            var day = (w[i] + tz) / 86400;
+            if (count > 0 && day != curDay) {
+                if (count >= Sager.CAL_MIN_SAMPLES_PER_DAY && (lastSec - first) >= Sager.CAL_MIN_SPAN_SEC) {
+                    mDayMeans.add((sum / count.toFloat()).toFloat());
+                    mDayNumbers.add(curDay as Number);
+                    closed = true;
+                }
+                sum = 0.0;
+                count = 0;
+            }
+            if (count == 0) {
+                curDay = day;
+                first = w[i];
+            }
+            var solarHour = solarHourNow - (nowSec - w[i]).toFloat() / 3600.0;
+            solarHour = solarHour - 24.0 * Math.floor(solarHour / 24.0);
+            var k = solarHour.toNumber();
+            if (k > 23) { k = 23; }
+            sum += v[i] - (tide[k] + (solarHour - k.toFloat()) * (tide[k + 1] - tide[k]));
+            count += 1;
+            lastSec = w[i];
+        }
+
+        if (closed) {
+            var today = (nowSec + tz) / 86400;
+            var keep = 0;
+            while (keep < mDayNumbers.size() && mDayNumbers[keep] < today - Sager.CAL_SPREAD_DAYS) { keep += 1; }
+            mDayMeans = mDayMeans.slice(keep, null);
+            mDayNumbers = mDayNumbers.slice(keep, null);
+            Storage.setValue("dmV", mDayMeans);
+            Storage.setValue("dmK", mDayNumbers);
+        }
+        Storage.setValue("dmD", curDay);
+        Storage.setValue("dmS", sum);
+        Storage.setValue("dmN", count);
+        Storage.setValue("dmF", first);
+        Storage.setValue("dmL", lastSec);
     }
 
     hidden function formatFloat(distance as Float, width as Number) as String {
@@ -1152,9 +1156,7 @@ class SimplyWatchView extends WatchUi.WatchFace {
             var tideAmp = Sager.s2Amplitude(latDeg);
             // The site's own daily cycle where it is known, the zonal climatology
             // until then: S1 is thermal, so a latitude mean is only ever a stand-in.
-            var s1 = updateDailyProfile(t0sec, hourNow, newestWhenSec, newestMsl,
-                                        tideAmp, elevWhen, elevAlt);
-            if (s1 == null) { s1 = Sager.s1Tide(latDeg); }
+            var s1 = updateDailyProfile(t0sec, hourNow, tideAmp, elevWhen, elevAlt);
             pressureDiff = pressureDiff - (tidePa(hourNow, tideAmp, s1) - tidePa(hourNow - tideSpanH, tideAmp, s1));
 
             var scaledLimit = Sager.windowLimitPa(windowHours, mSteadyLimit, windowHours);
@@ -1226,21 +1228,29 @@ class SimplyWatchView extends WatchUi.WatchFace {
             var steadyHours = measureSteadyHours(nowMoment.value());
 
             // --- Current pressure (MSL, altitude-safe; null when unreducible) ---
+            // One reduction for everything: the number shown, the trend and the
+            // rain model all reduce through the same gated altitude.
             if (latestNonNull != null) {
-                currentPress = getSeaLevelPressure(latestNonNull as Float);
+                var mslNow = (elevWhen != null) ? newestMsl : null;
+                currentPress = (mslNow != null) ? Math.round((mslNow as Float) / 100.0).toNumber() : null;
                 var monthF = today.month.toFloat() + (today.day.toFloat() - 1.0) / 30.4;
 
-                // The calibrated model measures anomalies of a few hundred pascals,
-                // so it needs the unrounded reduction, and it needs a real one:
-                // feeding it station pressure would turn a walk uphill into a
-                // collapsing barometer.
-                var mslNowPa = getSeaLevelPressurePa(latestNonNull as Float);
-                var ring = updateDailyRing(newestWhenSec, mslNowPa);
+                // The calibrated model measures anomalies of a few hundred pascals
+                // against tide-free day means, so it needs the unrounded reduction
+                // with the tide taken out, or the daily cycle becomes a daily swing
+                // in the rain chance. Station pressure would be worse still: a walk
+                // uphill would read as a collapsing barometer.
+                var mslTideFree = null;
+                if (mslNow != null && newestWhenSec != null) {
+                    var solarThen = hourNow - (t0sec - (newestWhenSec as Number)).toFloat() / 3600.0;
+                    mslTideFree = ((mslNow as Float) - tidePa(solarThen, tideAmp, s1)).toFloat();
+                }
+                var dayNow = (t0sec + System.getClockTime().timeZoneOffset) / 86400;
 
                 // The calibrated model once the ring can answer, the wind-aware table
                 // until then. The watch face has no compass, so the wind is genuinely
                 // unknown rather than calm.
-                var calibrated = Sager.CalibratedForecast(mslNowPa, ring);
+                var calibrated = Sager.CalibratedForecast(mslTideFree, mDayMeans, mDayNumbers, dayNow);
                 mLastForecast = (calibrated != null)
                     ? calibrated
                     : Sager.WeatherForecast(currentPress, monthF, null, trend, mNorthSouth, steadyHours);

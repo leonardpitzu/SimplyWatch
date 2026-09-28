@@ -210,23 +210,27 @@ module Sager {
     //   bins, and it is that averaging across days that removes the noise. A
     //   least-squares fit over a trailing day or two instead cannot separate the
     //   two and lands 30-40% high with an unstable phase.
+    //
+    //   The residuals come out of the watch's own sensor record, never out of the
+    //   moments an app happened to run: the barometer logs whether the glance is
+    //   open, the face is behind an activity, or nothing is on screen. Each pass
+    //   takes only the hours whose window has closed since the last one, so the
+    //   learner neither stalls on gaps in its own schedule nor counts an hour twice.
     const LEARN_WINDOW_SEC = 86400;
     const LEARN_LAG_SEC = 43200;
     const LEARN_MIN_COVERAGE = 0.96;
     const LEARN_DECIMATE_SEC = 900;
     const LEARN_ALPHA = 0.3;
     const LEARN_MIN_BINS = 12;
-    // Hourly slots: 24 h of context plus the sample being judged.
-    const LEARN_RING_SLOTS = 25;
-    const LEARN_RING_MAX_GAP_SEC = 5400;
-    // A scan that came back empty keeps coming back empty until the record is long
-    // enough to centre a window in, so it is retried on a timer, never hourly.
-    const LEARN_RESCAN_SEC = 21600;
+    // A hole this wide tilts a window's mean toward whichever half survived.
+    const LEARN_MAX_GAP_SEC = 5400;
+    // One new centre an hour is all the record can offer, so no pass sooner.
+    const LEARN_SCAN_SEC = 3000;
     // This far from the daily mean is synoptic weather, not a daily cycle.
     const LEARN_MAX_RESIDUAL_PA = 400.0;
     const LEARN_MAX_AMP_PA = 300.0;
-    // Beyond this the learned cycle belongs to somewhere else.
-    const LEARN_RESET_KM = 200.0;
+    // Beyond this a window spanning the journey would average two places.
+    const LEARN_MOVE_KM = 200.0;
 
     function binsFilled(mask as Number) as Number {
         var n = 0;
@@ -236,8 +240,11 @@ module Sager {
         return n;
     }
 
-    // True when the watch has moved far enough that the cycle it learned belongs
-    // to the terrain it left behind.
+    // True when the watch has moved far enough that a window spanning the journey
+    // would average two places. The bins themselves are kept: most of the cycle
+    // is solar, and it re-converges faster from a neighbour's than from nothing -
+    // in a traveller simulation across ten climates, keeping them halved the
+    // leftover daily cycle on the day of arrival against starting over.
     function profileMoved(latDeg as Float or Null, lonDeg as Float or Null,
                           prevLat as Float or Null, prevLon as Float or Null) as Boolean {
         if (latDeg == null || lonDeg == null || prevLat == null || prevLon == null) {
@@ -246,18 +253,16 @@ module Sager {
         var dLat = ((latDeg as Float) - (prevLat as Float)) * 111.0;
         var dLon = ((lonDeg as Float) - (prevLon as Float)) * 111.0
                  * Math.cos((latDeg as Float) * Math.PI / 180.0);
-        return Math.sqrt(dLat * dLat + dLon * dLon) > LEARN_RESET_KM;
+        return Math.sqrt(dLat * dLat + dLon * dLon) > LEARN_MOVE_KM;
     }
 
-    // Sample minus the mean of the window centred on it, minus the S2 the
-    // climatology already gets right. `values` runs newest-first over [lo..hi].
-    function residualPa(values as Array<Float>, lo as Number, hi as Number,
-                        centre as Number, solarHour as Float, s2Amp as Float) as Float {
-        var sum = 0.0;
-        for (var i = lo; i <= hi; i++) { sum += values[i]; }
-        var mean = sum / (hi - lo + 1).toFloat();
+    // A sample minus the mean of the window centred on it, minus the S2 the
+    // climatology already gets right. The caller keeps the mean as a running sum,
+    // since re-adding every window is what a first pass over days of record cannot
+    // afford inside the watchdog.
+    function residualPa(value as Float, windowMean as Float, solarHour as Float, s2Amp as Float) as Float {
         var s2 = s2Amp * Math.cos(2.0 * Math.PI * (solarHour - S2_PHASE_H) / 12.0);
-        return (values[centre] - mean - s2).toFloat();
+        return (value - windowMean - s2).toFloat();
     }
 
     // Average one residual into its solar-hour bin. Returns the updated coverage
@@ -344,31 +349,38 @@ module Sager {
     }
 
     // ── Calibrated rain probability ─────────────────────────────────────────
-    //   Fitted offline against 73 days of a real station's rain gauge, then baked.
-    //   One feature: sea-level pressure measured against the site's own recent
-    //   history, in units of the site's own recent spread.
+    //   Fitted offline against 73 days of the home station's rain gauge, then
+    //   baked. One feature: tide-free sea-level pressure measured against the
+    //   site's own recent history, in units of the site's own recent spread.
     //
-    //       z = (msl_now - mean of the last 7 daily means) / spread of the last 30
+    //       z = (msl_now - tide - mean of the last 7 daily means) / spread of the last 30
     //       p = 1 / (1 + exp(-(a + b*z)))
     //
     //   The label shown is the forecast code whose tabulated probability is nearest
     //   p, so the words and the number are the same quantity and cannot contradict
     //   each other. That is what stops "Very unsettled" appearing beside 12%.
     //
-    //   What this does and does not claim. It ORDERS hours well: on the reference
-    //   archive it separates wet from dry with an area under the curve of 0.72,
-    //   against 0.52 for the table it replaces, which is a coin flip. It does NOT
-    //   beat a constant forecast of the local average, because 73 summer days
-    //   cannot establish what that average is across a year. So the range below is
-    //   deliberately narrow, and codes above the twenties are unreachable: a single
-    //   barometer does not know enough to say "Stormy".
+    //   What this does and does not claim. It ORDERS hours: on the home archive it
+    //   separates wet from dry with an area under the curve of 0.73, against 0.52
+    //   for the table it replaces, which is a coin flip. Scored on ten climates,
+    //   leave-one-site-out, that ordering travels to Europe (0.63-0.66 in the Alps,
+    //   on the Atlantic and the Black Sea), weakly to the American plains (0.54),
+    //   and not at all to Sydney or the tropics (0.50-0.52). The LEVEL does not
+    //   travel: 24 h wet rates run from 8% to 63% across those sites, and a fixed
+    //   intercept only beats a site's own average where it happens to match it. A
+    //   fit pooled over the other nine did worse on average (Brier skill -0.26
+    //   against -0.22, each site scored against its own average) and worse at
+    //   home, so the level is the home station's - the one place a gauge has
+    //   measured it. So the range below is deliberately narrow, and codes above
+    //   the twenties are unreachable: a single barometer does not know enough to
+    //   say "Stormy".
     //
     //   Dividing by the spread earns nothing measurable on the reference archive,
     //   where the spread barely moves. It is here so a slope fitted in summer still
     //   means something in winter, when the same anomaly in pascals is ordinary.
     const CAL_HORIZON_H = 24;
-    const CAL_INTERCEPT = -1.36169;
-    const CAL_SLOPE_Z = -0.51457;
+    const CAL_INTERCEPT = -1.36540;
+    const CAL_SLOPE_Z = -0.53077;
     const CAL_E = 2.718281828459045;
     // Bounds the amplification when a month is unusually quiet, so a trivial
     // wiggle in settled weather cannot be divided up into a dramatic anomaly.
@@ -388,35 +400,40 @@ module Sager {
     const CAL_MIN_SAMPLES_PER_DAY = 4;
     const CAL_MIN_SPAN_SEC = 43200;
 
-    // Spread of the trailing daily means, floored. Null while the ring is short.
-    function dailySpreadPa(days as Array<Float>) as Float or Null {
-        var n = days.size();
-        if (n < CAL_MIN_DAYS) { return null; }
-        var from = (n > CAL_SPREAD_DAYS) ? n - CAL_SPREAD_DAYS : 0;
-        var count = (n - from).toFloat();
+    // Spread of the closed daily means, floored, and the anomaly of `mslNowPa`
+    // against the recent ones. `means` holds the tide-free mean sea-level pressure
+    // of each CLOSED local day and `days` its day number, both oldest first. Only
+    // days inside each window count, so a week the watch spent in a drawer cannot
+    // pass for last week. Today is excluded on purpose: subtracting today's own
+    // weather from itself would flatten the very anomaly being measured. Null
+    // while the spread rests on too few days or no day is recent.
+    function standardisedAnomaly(mslNowPa as Float, means as Array<Float>,
+                                 days as Array<Number>, today as Number) as Float or Null {
+        var n = means.size();
+        var count = 0;
         var sum = 0.0;
-        for (var i = from; i < n; i++) { sum += days[i]; }
-        var mean = sum / count;
+        var recentCount = 0;
+        var recentSum = 0.0;
+        for (var i = 0; i < n; i++) {
+            if (days[i] < today - CAL_SPREAD_DAYS) { continue; }
+            count += 1;
+            sum += means[i];
+            if (days[i] >= today - CAL_ANOMALY_DAYS) {
+                recentCount += 1;
+                recentSum += means[i];
+            }
+        }
+        if (count < CAL_MIN_DAYS || recentCount == 0) { return null; }
+        var mean = sum / count.toFloat();
         var acc = 0.0;
-        for (var j = from; j < n; j++) {
-            var d = days[j] - mean;
+        for (var j = 0; j < n; j++) {
+            if (days[j] < today - CAL_SPREAD_DAYS) { continue; }
+            var d = means[j] - mean;
             acc += d * d;
         }
-        var sd = Math.sqrt(acc / (count - 1.0));
-        return (sd > CAL_SD_FLOOR_PA) ? sd.toFloat() : CAL_SD_FLOOR_PA;
-    }
-
-    // `days` holds the mean sea-level pressure of each CLOSED day, oldest first.
-    // Today is excluded on purpose: subtracting today's own weather from itself
-    // would flatten the very anomaly being measured.
-    function standardisedAnomaly(mslNowPa as Float, days as Array<Float>) as Float or Null {
-        var sd = dailySpreadPa(days);
-        if (sd == null) { return null; }
-        var n = days.size();
-        var from = (n > CAL_ANOMALY_DAYS) ? n - CAL_ANOMALY_DAYS : 0;
-        var sum = 0.0;
-        for (var i = from; i < n; i++) { sum += days[i]; }
-        var z = (mslNowPa - sum / (n - from).toFloat()) / (sd as Float);
+        var sd = Math.sqrt(acc / (count.toFloat() - 1.0));
+        if (sd < CAL_SD_FLOOR_PA) { sd = CAL_SD_FLOOR_PA; }
+        var z = (mslNowPa - recentSum / recentCount.toFloat()) / sd;
         if (z > CAL_Z_LIMIT) { z = CAL_Z_LIMIT; }
         if (z < 0.0 - CAL_Z_LIMIT) { z = 0.0 - CAL_Z_LIMIT; }
         return z.toFloat();
@@ -446,11 +463,12 @@ module Sager {
 
     // Returns [forecastText, forecastNumber, precipProbability], or null while the
     // daily ring is still filling, in which case the caller falls back to the
-    // wind-aware table below.
-    function CalibratedForecast(mslNowPa as Float or Null,
-                                days as Array<Float> or Null) as Array or Null {
-        if (mslNowPa == null || days == null) { return null; }
-        var z = standardisedAnomaly(mslNowPa as Float, days as Array<Float>);
+    // wind-aware table below. `mslNowPa` must be tide-free, like the day means it
+    // is measured against, or the daily cycle turns into a daily swing in rain %.
+    function CalibratedForecast(mslNowPa as Float or Null, means as Array<Float> or Null,
+                                days as Array<Number> or Null, today as Number) as Array or Null {
+        if (mslNowPa == null || means == null || days == null) { return null; }
+        var z = standardisedAnomaly(mslNowPa as Float, means as Array<Float>, days as Array<Number>, today);
         if (z == null) { return null; }
         var p = calibratedProbability(z as Float);
         var code = codeForProbability(p);
