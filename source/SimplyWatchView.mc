@@ -301,19 +301,6 @@ class SimplyWatchView extends WatchUi.WatchFace {
         return (-hours * slopeAge) - (tidePa(hourNow, s2Amp, s1) - tidePa(hourNow - hours, s2Amp, s1));
     }
 
-    // Reduce a single station-pressure sample to MSL using the most-recent
-    // elevation at or before its timestamp (zero-order hold). Returns the raw
-    // value unchanged when no elevation series is available.
-    hidden function mslReduce(stationPa as Float, whenSec as Number, elevWhen as Array<Number> or Null, elevAlt as Array<Float> or Null) as Float {
-        if (elevWhen == null || elevAlt == null) { return stationPa; }
-        var ez = elevWhen as Array<Number>;
-        var ea = elevAlt as Array<Float>;
-        if (ez.size() == 0) { return stationPa; }
-        var idx = 0;
-        while (idx < ez.size() - 1 && ez[idx] > whenSec) { idx += 1; }
-        return stationPa / mslFactor(altAtAnchor(ez, ea, idx, whenSec));
-    }
-
     // ── Learned daily cycle and daily means ────────────────────────────────
     // Both come out of the watch's own pressure record, never out of the moments
     // this app happened to run, so they keep learning through an activity, a night

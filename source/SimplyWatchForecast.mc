@@ -159,13 +159,6 @@ module Sager {
              + s1Amp * Math.cos(2.0 * Math.PI * (solarHour - s1Phase) / 24.0)).toFloat();
     }
 
-    function tideSlopePaH(solarHour as Float, s2Amp as Float, s1Amp as Float, s1Phase as Float) as Float {
-        return (0.0 - s2Amp * (2.0 * Math.PI / 12.0)
-                    * Math.sin(2.0 * Math.PI * (solarHour - S2_PHASE_H) / 12.0)
-              - s1Amp * (2.0 * Math.PI / 24.0)
-                    * Math.sin(2.0 * Math.PI * (solarHour - s1Phase) / 24.0)).toFloat();
-    }
-
     // ── Tide-model uncertainty and the thresholds it sets ───────────────────
     //   What the correction gets wrong, not what it removes. Fitted to the median
     //   residual of the model above against Dai & Wang across all four seasons and
